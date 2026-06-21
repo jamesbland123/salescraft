@@ -239,8 +239,12 @@ func runToolIteration(cfg TrialConfig, iteration int) error {
 
 	stdoutPath := filepath.Join(artifactDir, iterationFile("tool", iteration, "stdout.log"))
 	stderrPath := filepath.Join(artifactDir, iterationFile("tool", iteration, "stderr.log"))
+	env, err := trialEnv(cfg, workspace, artifactDir)
+	if err != nil {
+		return err
+	}
 	statusf("run: trial=%s tool=%s command=%s", cfg.TrialID, cfg.Tool.Name, strings.Join(append([]string{cfg.Tool.Command}, cfg.Tool.Args...), " "))
-	result, err := runCaptured(workspace, cfg.Tool.Command, cfg.Tool.Args, trialEnv(cfg, workspace, artifactDir), stdoutPath, stderrPath)
+	result, err := runCaptured(workspace, cfg.Tool.Command, cfg.Tool.Args, env, stdoutPath, stderrPath)
 	writeErr := writeJSON(filepath.Join(artifactDir, iterationFile("tool", iteration, "result.json")), result)
 	if err != nil {
 		return fmt.Errorf("%w; see %s and %s", err, stdoutPath, stderrPath)
@@ -279,7 +283,11 @@ func verifyIteration(cfg TrialConfig, iteration int) error {
 		_, _ = fmt.Fprintf(logFile, "\n$ %s\n", strings.Join(command, " "))
 		stdout := io.MultiWriter(logFile, os.Stdout)
 		stderr := io.MultiWriter(logFile, os.Stderr)
-		result := runWithWriters(workspace, command[0], command[1:], trialEnv(cfg, workspace, artifactDir), stdout, stderr)
+		env, err := trialEnv(cfg, workspace, artifactDir)
+		if err != nil {
+			return err
+		}
+		result := runWithWriters(workspace, command[0], command[1:], env, stdout, stderr)
 		results = append(results, result)
 		if result.ExitCode != 0 {
 			_ = writeJSON(filepath.Join(artifactDir, iterationFile("verify", iteration, "result.json")), results)
@@ -572,7 +580,7 @@ func mergedEnv(extra map[string]string) []string {
 	return env
 }
 
-func trialEnv(cfg TrialConfig, workspace, artifactDir string) map[string]string {
+func trialEnv(cfg TrialConfig, workspace, artifactDir string) (map[string]string, error) {
 	cacheRoot := filepath.Join(os.TempDir(), "salescraft-exp", cfg.TrialID)
 	env := map[string]string{
 		"SALESCRAFT_EXPERIMENT_RUNNER": "salescraft-exp",
@@ -586,10 +594,57 @@ func trialEnv(cfg TrialConfig, workspace, artifactDir string) map[string]string 
 		"PNPM_HOME":                    filepath.Join(cacheRoot, "pnpm-home"),
 		"XDG_CACHE_HOME":               filepath.Join(cacheRoot, "xdg"),
 	}
+	if cfg.Tool.Name == "codex" {
+		codexHome, err := prepareCodexHome(cacheRoot)
+		if err != nil {
+			return nil, err
+		}
+		env["CODEX_HOME"] = codexHome
+	}
 	for k, v := range cfg.Tool.Env {
 		env[k] = v
 	}
-	return env
+	return env, nil
+}
+
+func prepareCodexHome(cacheRoot string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	sourceHome := filepath.Join(home, ".codex")
+	destHome := filepath.Join(cacheRoot, "codex-home")
+	if err := os.MkdirAll(destHome, 0o700); err != nil {
+		return "", err
+	}
+	for _, name := range []string{"config.toml", "auth.json"} {
+		src := filepath.Join(sourceHome, name)
+		if !exists(src) {
+			continue
+		}
+		dst := filepath.Join(destHome, name)
+		if err := copyFile(src, dst, 0o600); err != nil {
+			return "", fmt.Errorf("copy Codex %s: %w", name, err)
+		}
+	}
+	return destHome, nil
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 func ensureCleanRepo(repoRoot string) error {
