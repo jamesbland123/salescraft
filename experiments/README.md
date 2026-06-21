@@ -5,6 +5,9 @@ The runner resets Salescraft to a pinned baseline, invokes one selected tool
 inside a disposable workspace, verifies the result with fixed commands, and
 archives the generated artifacts.
 
+For long-running supervision, tmux usage, Podman setup, and the AI operator
+prompt, see [OPERATOR_GUIDE.md](OPERATOR_GUIDE.md).
+
 The runner is a control. Codex, Claude Code, OpenCode, Aider, OpenHands, and
 similar systems are experimental tools that run inside the workspace created by
 the runner.
@@ -52,6 +55,27 @@ Or run the full automated lifecycle:
 
 ```bash
 ./experiments/runner/salescraft-exp trial --config experiments/configs/phase1-codex-gpt.json
+```
+
+For unattended operation, run the watcher in tmux. It starts the experiment in
+a separate tmux session, polls it, and keeps the experiment pane alive after
+runner exit. Start this from a normal host shell, or from an AI operator that
+was launched with no approval prompts and full shell/filesystem/network access:
+
+```bash
+tmux new-session -d -s salescraft-watch -c /Users/james/dev/salescraft './experiments/scripts/watch-experiment.sh --config experiments/configs/phase1-codex-gpt.json'
+```
+
+Watch the operator:
+
+```bash
+tmux attach -t salescraft-watch
+```
+
+Watch the experiment directly:
+
+```bash
+tmux attach -t salescraft-exp
 ```
 
 `trial` does not clean up the workspace. It leaves
