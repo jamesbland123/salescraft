@@ -129,7 +129,10 @@ const OWNERSHIP_RULES: OwnershipRule[] = [
 ```typescript
 // Users (Owner only)
 GET    /api/v1/users                           // List all users
-POST   /api/v1/users                           // Create user
+POST   /api/v1/users/invite                    // Invite user
+GET    /api/v1/users/invitations               // List pending invitations
+POST   /api/v1/users/invite/:id/resend         // Resend invitation
+DELETE /api/v1/users/invite/:id                // Revoke invitation
 GET    /api/v1/users/:id
 PUT    /api/v1/users/:id                       // Update user (role, status, territories)
 PUT    /api/v1/users/:id/deactivate            // Deactivate (don't delete)
@@ -140,6 +143,8 @@ GET    /api/v1/users/me                        // Get current user profile
 PUT    /api/v1/users/me                        // Update own profile (limited fields)
 PUT    /api/v1/users/me/password               // Change own password
 GET    /api/v1/users/me/permissions            // Get computed permission list
+POST   /api/v1/users/me/push-token             // Register mobile Expo push token
+DELETE /api/v1/users/me/push-token/:id         // Revoke mobile push token
 
 // Notifications
 GET    /api/v1/notifications                   // List for current user

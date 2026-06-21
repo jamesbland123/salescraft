@@ -2,6 +2,16 @@
 
 This document resolves remaining ambiguities and contradictions identified during spec review. Each resolution is authoritative and supersedes conflicting statements elsewhere in the spec.
 
+## 0. Authoritative Implementation Sources
+
+**Resolution:** Use these files as the source of truth when specs overlap:
+- Persistence/schema: `spec/24-complete-prisma-schema.md`
+- API route names and request/response contracts: `spec/19-api-reference.md`
+- Project/package configuration: `spec/25-project-configuration.md`
+- Architecture decisions and contradiction resolutions: this file
+
+Feature specs remain authoritative for business rules, workflows, and UI intent, but their inline data models are explanatory when they conflict with the schema file.
+
 ---
 
 ## 1. Frontend Architecture: Static Export SPA (NOT SSR)
@@ -12,7 +22,7 @@ This document resolves remaining ambiguities and contradictions identified durin
 - Authentication is handled entirely client-side (store access token in memory, refresh via HTTP-only cookie to the API)
 - The `apps/web/next.config.js` must include `output: 'export'` and `trailingSlash: true`
 - Dynamic routes use client-side routing only
-- This contradicts the mention of "SSR" in spec/01-architecture.md line 33 — that line should be read as "client-side rendering with fast initial loads"
+- `spec/01-architecture.md` has been updated to match this decision.
 
 ---
 
@@ -186,13 +196,14 @@ This is stored as a separate Prisma model.
 ## 9. AI Cost Budget Enforcement
 
 **Resolution:**
-- Budget configuration stored in CompanySettings table:
+- Budget configuration stored in `CompanySettings.aiConfig`:
   ```
   aiConfig: {
     dailyBudgetUsd: 50,        // Default $50/day
     monthlyBudgetUsd: 1000,    // Default $1000/month
     alertThresholdPercent: 80,  // Alert at 80% of limit
-    criticalTasks: ['rfp_parsing', 'signal_classification']  // Bypass daily limit
+    criticalTasks: ['rfp_parsing', 'signal_classification'], // Bypass daily limit
+    enabledModels: ['claude-sonnet', 'titan-embed-v2']
   }
   ```
 - Enforcement: Before each AI call, `cost-tracker.ts` checks current day's spend against dailyBudgetUsd
@@ -270,7 +281,7 @@ If the organization has no address/zip, fall back to ALL users with the required
 - Registration flow:
   1. On mobile app login, call `Notifications.getExpoPushTokenAsync()` to get the Expo push token
   2. Send token to API: `POST /api/v1/users/me/push-token` with body `{ token: "ExponentPushToken[xxx]", platform: "ios" | "android" }`
-  3. Server stores token on the User record (field: `expoPushTokens: String[]` — multiple devices supported)
+  3. Server stores token in the `UserPushToken` table with `userId`, `token`, `platform`, `createdAt`, `lastUsedAt`, and `revokedAt`
 - Sending flow:
   1. When a notification is created with channel `push`, the notification service calls the Expo Push API
   2. `POST https://exp.host/--/api/v2/push/send` with message payload

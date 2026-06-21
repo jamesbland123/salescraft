@@ -195,7 +195,7 @@ GET    /api/v1/mobile/cache/:userId            // Get all data needed for offlin
 // Response: projects, schedules, punch lists, floor plans URLs, contacts
 
 // Push Token
-POST   /api/v1/mobile/push-token              // Register push notification token
+POST   /api/v1/users/me/push-token            // Register push notification token
 // Body: { token, platform: 'ios' | 'android' }
 ```
 

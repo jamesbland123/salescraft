@@ -710,7 +710,7 @@ interface Project {
   scheduleConstraints?: string;   // "Summer only", "After 3pm", etc.
   prevailingWage: boolean;
   wageCounty?: string;
-  crewIds: string[];              // FK → User[] (assigned installers)
+  crewAssignments: CrewAssignment[]; // Assigned installers and roles, stored in CrewAssignment table
   materialOrders: MaterialOrder[];
   changeOrders: ChangeOrder[];
   documents: ProjectDocument[];
@@ -953,7 +953,7 @@ stateDiagram-v2
 
 **Transition Guards:**
 - Contracting → MaterialOrder: requires contract document uploaded, bonds and insurance confirmed
-- Scheduled → InProgress: requires `startDate` set, `crewIds` assigned, materials delivered
+- Scheduled → InProgress: requires `startDate` set, at least one active `CrewAssignment`, materials delivered
 - InProgress → PunchList: requires all DailyLogs show area coverage matching scope
 - PunchList → Closeout: requires all PunchListItems in status `verified` or `disputed`
 - Closeout → Complete: requires closeout documents uploaded (as-builts, warranty registration)

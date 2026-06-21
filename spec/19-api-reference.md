@@ -116,6 +116,8 @@ PUT    /users/:id/deactivate          // Deactivate user (owner)
 GET    /users/me                      // Get current user
 PUT    /users/me                      // Update own profile
 GET    /users/me/permissions          // Get computed permissions
+POST   /users/me/push-token           // Register mobile Expo push token
+DELETE /users/me/push-token/:id       // Revoke one mobile push token
 ```
 
 ### Request/Response Types
@@ -839,6 +841,11 @@ GET    /compliance/documents/expiring  // Documents expiring within 30 days
 GET    /compliance/vendor-registrations    // Vendor registration status
 POST   /compliance/vendor-registrations
 PUT    /compliance/vendor-registrations/:id
+GET    /compliance/vendor-registrations/expiring
+GET    /compliance/cooperative-contracts
+GET    /compliance/cooperative-contracts/match
+POST   /compliance/cooperative-contracts
+PUT    /compliance/cooperative-contracts/:id
 GET    /compliance/jurisdiction-rules  // Jurisdiction rules
 POST   /compliance/jurisdiction-rules
 GET    /compliance/wage-determinations // Wage rate lookup

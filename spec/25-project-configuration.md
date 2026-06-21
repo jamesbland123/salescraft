@@ -190,7 +190,7 @@ packages:
   "scripts": {
     "dev": "next dev --port 3000",
     "build": "next build",
-    "start": "next start",
+    "preview": "serve out -l 3000",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
   },
@@ -222,7 +222,113 @@ packages:
     "@types/react": "^18.2.61",
     "@types/react-dom": "^18.2.19",
     "eslint-config-next": "^14.1.1",
+    "serve": "^14.2.1",
     "typescript": "^5.4.2"
+  }
+}
+```
+
+---
+
+## 6a. `apps/web/next.config.js`
+
+```javascript
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: 'export',
+  trailingSlash: true,
+  images: {
+    unoptimized: true
+  },
+  env: {
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+    NEXT_PUBLIC_MAPBOX_TOKEN: process.env.NEXT_PUBLIC_MAPBOX_TOKEN
+  }
+};
+
+module.exports = nextConfig;
+```
+
+The web app is a static SPA. Do not add Next.js API routes or server actions that require a Node runtime.
+
+---
+
+## 6b. `apps/mobile/package.json`
+
+```json
+{
+  "name": "@salescraft/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "expo/AppEntry",
+  "scripts": {
+    "dev": "expo start",
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx",
+    "test": "vitest",
+    "doctor": "expo doctor"
+  },
+  "dependencies": {
+    "@nozbe/watermelondb": "^0.27.1",
+    "@react-navigation/bottom-tabs": "^6.5.20",
+    "@react-navigation/native": "^6.1.17",
+    "@react-navigation/native-stack": "^6.9.26",
+    "@salescraft/shared": "workspace:*",
+    "expo": "~50.0.0",
+    "expo-camera": "~14.0.0",
+    "expo-file-system": "~16.0.0",
+    "expo-image-picker": "~14.7.1",
+    "expo-linking": "~6.2.2",
+    "expo-local-authentication": "~13.8.0",
+    "expo-location": "~16.5.5",
+    "expo-notifications": "~0.27.6",
+    "expo-secure-store": "~12.8.1",
+    "expo-speech": "~11.7.0",
+    "react": "18.2.0",
+    "react-native": "0.73.6",
+    "react-native-gesture-handler": "~2.14.0",
+    "react-native-pdf": "^6.7.5",
+    "react-native-reanimated": "~3.6.2",
+    "react-native-safe-area-context": "4.8.2",
+    "react-native-screens": "~3.29.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.61",
+    "typescript": "^5.4.2",
+    "vitest": "^1.3.1"
+  }
+}
+```
+
+## 6c. `apps/mobile/app.json`
+
+```json
+{
+  "expo": {
+    "name": "Salescraft",
+    "slug": "salescraft",
+    "scheme": "salescraft",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.salescraft.mobile"
+    },
+    "android": {
+      "package": "com.salescraft.mobile"
+    },
+    "plugins": [
+      "expo-camera",
+      "expo-location",
+      "expo-notifications",
+      "expo-secure-store"
+    ]
   }
 }
 ```

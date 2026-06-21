@@ -16,7 +16,7 @@ Salescraft's data architecture must support: relational business data (contacts,
 
 ### PostgreSQL Extensions Required
 ```sql
--- Enable in docker/postgres/init.sql
+-- Enable in podman/postgres/init.sql
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";      -- UUID generation
 CREATE EXTENSION IF NOT EXISTS "pgvector";        -- Vector similarity search
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";         -- Fuzzy text matching
@@ -435,7 +435,7 @@ GROUP BY c.assigned_to_id;
 - `packages/database/prisma/migrations/` — Migration files
 - `packages/database/prisma/seed.ts` — Seed data script
 - `packages/database/src/` — Database utilities (search queries, sync logic)
-- `docker/postgres/init.sql` — Extension initialization
+- `podman/postgres/init.sql` — Extension initialization
 
 ### Key Dependencies
 - `prisma` — ORM and migration tooling
@@ -444,7 +444,7 @@ GROUP BY c.assigned_to_id;
 
 ### Implementation Order
 1. Prisma schema with core entities (users, orgs, contacts)
-2. Docker Compose PostgreSQL with extensions
+2. Podman Compose PostgreSQL with extensions
 3. Initial migration + seed script
 4. Full-text search indexes (custom migration)
 5. pgvector embedding table (custom migration)

@@ -199,31 +199,31 @@ POST   /api/v1/compliance/documents          // Upload new document
 GET    /api/v1/compliance/documents/:id
 PUT    /api/v1/compliance/documents/:id      // Update metadata
 DELETE /api/v1/compliance/documents/:id      // Soft delete
-GET    /api/v1/compliance/expiring           // Documents expiring within N days
+GET    /api/v1/compliance/documents/expiring // Documents expiring within N days
 
 // Vendor Registrations
-GET    /api/v1/compliance/registrations
-POST   /api/v1/compliance/registrations
-PUT    /api/v1/compliance/registrations/:id
-GET    /api/v1/compliance/registrations/expiring
+GET    /api/v1/compliance/vendor-registrations
+POST   /api/v1/compliance/vendor-registrations
+PUT    /api/v1/compliance/vendor-registrations/:id
+GET    /api/v1/compliance/vendor-registrations/expiring
 
 // Cooperative Contracts
-GET    /api/v1/cooperative-contracts         // List active contracts
-GET    /api/v1/cooperative-contracts/match   // Given an org, which contracts can they use?
-POST   /api/v1/cooperative-contracts
-PUT    /api/v1/cooperative-contracts/:id
+GET    /api/v1/compliance/cooperative-contracts         // List active contracts
+GET    /api/v1/compliance/cooperative-contracts/match   // Given an org, which contracts can they use?
+POST   /api/v1/compliance/cooperative-contracts
+PUT    /api/v1/compliance/cooperative-contracts/:id
 
 // Jurisdiction Rules
-GET    /api/v1/jurisdictions                 // List all
-GET    /api/v1/jurisdictions/:id
-GET    /api/v1/jurisdictions/for-org/:orgId  // Get rules applicable to a specific org
-POST   /api/v1/jurisdictions
-PUT    /api/v1/jurisdictions/:id
+GET    /api/v1/compliance/jurisdiction-rules                 // List all
+GET    /api/v1/compliance/jurisdiction-rules/:id
+GET    /api/v1/compliance/jurisdiction-rules/for-org/:orgId  // Get rules applicable to a specific org
+POST   /api/v1/compliance/jurisdiction-rules
+PUT    /api/v1/compliance/jurisdiction-rules/:id
 
 // Wage Determinations
-GET    /api/v1/wages                         // List, filter by state/county
-GET    /api/v1/wages/lookup                  // ?state=CA&county=Riverside&trade=Floor+Layer
-POST   /api/v1/wages/refresh                 // Trigger re-scrape of wage databases
+GET    /api/v1/compliance/wage-determinations        // List, filter by state/county
+GET    /api/v1/compliance/wage-determinations/lookup // ?state=CA&county=Riverside&trade=Floor+Layer
+POST   /api/v1/compliance/wage-determinations/refresh // Trigger re-scrape of wage databases
 
 // Ethics Check
 POST   /api/v1/ethics/check                  // Check if a planned gesture is within limits

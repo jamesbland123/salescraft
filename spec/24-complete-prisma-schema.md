@@ -1,10 +1,11 @@
 # Complete Prisma Schema
 
-This document provides the complete Prisma schema for Salescraft, expanding on the partial schema shown in `spec/14-data-architecture.md`. Every entity defined across the domain model (`02-domain-model.md`), flooring estimating (`06-flooring-estimating.md`), communication hub (`10-communication-hub.md`), integrations (`12-integrations.md`), and authentication (`18-authentication.md`) specs is represented here as a Prisma model with full relations, indexes, and enum definitions.
+This document provides the complete Prisma schema for Salescraft, expanding on the partial schema shown in `spec/14-data-architecture.md`. This is the authoritative persistence contract for implementation. If an earlier spec shows a simplified TypeScript interface or partial Prisma model that conflicts with this file, use this file.
 
 Design decisions encoded in this schema:
 
 - **Normalized models** for all first-class entities with their own lifecycle and query patterns
+- **Company profile vs. settings split** — Company stores legal/identity data; CompanySettings stores operational defaults and JSON configuration
 - **JSON columns** for embedded arrays/objects that are always read/written with their parent (e.g., Bid.documents, Product.specifications)
 - **String arrays** (native PostgreSQL) for simple tag/ID lists
 - **Decimal type** for all monetary amounts to avoid floating-point precision issues
@@ -283,6 +284,95 @@ enum CallOutcome {
   left_message
 }
 
+enum PushPlatform {
+  ios
+  android
+}
+
+enum ComplianceDocType {
+  contractor_license
+  general_liability
+  workers_comp
+  auto_insurance
+  umbrella_policy
+  bond_capacity_letter
+  w9
+  dbe_certification
+  mbe_certification
+  wbe_certification
+  dvbe_certification
+  dir_registration
+  sam_registration
+  business_license
+  safety_certification
+}
+
+enum VendorRegistrationStatus {
+  active
+  pending
+  expired
+  rejected
+}
+
+enum SourceType {
+  bid_board
+  school_board
+  city_council
+  bond_tracker
+  cip_database
+  building_permits
+  news
+  architect_registry
+}
+
+enum BidRecommendation {
+  bid
+  no_bid
+  discuss
+}
+
+enum CalendarEntryType {
+  pre_bid_meeting
+  questions_deadline
+  submission_deadline
+  award_date
+  addendum_issued
+  internal_review
+  custom
+}
+
+enum CrewRole {
+  lead
+  journeyman
+  apprentice
+}
+
+enum MilestoneType {
+  ntp
+  submittal_due
+  submittal_approved
+  material_order
+  material_delivery
+  mobilization
+  phase_start
+  phase_complete
+  substantial_completion
+  punch_list_walk
+  punch_list_complete
+  closeout_submitted
+  final_payment
+  warranty_start
+  warranty_end
+  custom
+}
+
+enum MilestoneStatus {
+  pending
+  completed
+  overdue
+  skipped
+}
+
 // ═══════════════════════════════════════════
 // AUTH & USERS
 // ═══════════════════════════════════════════
@@ -319,9 +409,11 @@ model User {
   callLogs             CallLog[]
   gestures             Gesture[]
   sessions             Session[]
+  pushTokens           UserPushToken[]
   invitationsSent      Invitation[]         @relation("InvitedByUser")
   passwordResetTokens  PasswordResetToken[]
   assignedOpportunities Opportunity[]       @relation("AssignedOpportunities")
+  dismissedSignals     IntelligenceSignal[] @relation("DismissedSignals")
   assignedPunchList    PunchListItem[]      @relation("AssignedPunchList")
   reportedPunchList    PunchListItem[]      @relation("ReportedPunchList")
   estimates            Estimate[]           @relation("EstimatorEstimates")
@@ -332,6 +424,13 @@ model User {
   aiUsageLogs          AIUsageLog[]
   createdOrganizations Organization[]       @relation("CreatedByUser")
   createdContacts      Contact[]            @relation("CreatedByUser")
+  updatedCompanySettings CompanySettings[]   @relation("CompanySettingsUpdatedBy")
+  crewAssignments      CrewAssignment[]
+  assignedMilestones   ProjectMilestone[]    @relation("AssignedMilestones")
+  submittedBidMatrices BidDecisionMatrix[]   @relation("SubmittedBidMatrices")
+  approvedBidMatrices  BidDecisionMatrix[]   @relation("ApprovedBidMatrices")
+  completedChecklistItems ChecklistItem[]     @relation("CompletedChecklistItems")
+  uploadedComplianceDocuments ComplianceDocument[] @relation("UploadedComplianceDocuments")
 
   @@index([email])
   @@index([role])
@@ -352,6 +451,22 @@ model Session {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+model UserPushToken {
+  id        String       @id @default(uuid())
+  userId    String
+  token     String       @unique
+  platform  PushPlatform
+  createdAt DateTime     @default(now())
+  lastUsedAt DateTime?
+  revokedAt DateTime?
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([revokedAt])
 }
 
 model Invitation {
@@ -395,27 +510,167 @@ model PasswordResetToken {
 // ═══════════════════════════════════════════
 
 model Company {
-  id        String   @id @default(uuid())
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              String   @id @default(uuid())
+  name            String
+  emailDomain     String
+  phone           String?
+  street1         String?
+  street2         String?
+  city            String?
+  state           String?
+  zip             String?
+  logoUrl         String?
+  bondingCapacity Decimal?
+  licenseNumbers  Json     @default("[]") // Array of LicenseEntry objects
+  insuranceSummary String?
+  taxId           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   // Relations
   settings CompanySettings?
 }
 
 model CompanySettings {
-  id                    String  @id @default(uuid())
-  companyId             String  @unique
-  defaultOverheadPct    Decimal @default(15)
-  defaultProfitPct      Decimal @default(10)
-  minimumProfitPct      Decimal @default(5)
-  defaultWasteFactor    Decimal @default(10)
-  giftLimitDefault      Decimal @default(50)
-  fiscalYearStartMonth  Int     @default(7)
+  id                        String   @id @default(uuid())
+  companyId                 String   @unique
+  defaultOverheadPct        Decimal  @default(15)
+  defaultProfitPct          Decimal  @default(10)
+  minimumProfitPct          Decimal  @default(5)
+  defaultWasteFactor        Decimal  @default(10)
+  standardLaborHourlyRate   Decimal  @default(45)
+  giftLimitDefault          Decimal  @default(50)
+  fiscalYearStartMonth      Int      @default(7)
+  scoringWeights            Json     @default("{}") // Opportunity and relationship scoring weights
+  aiConfig                  Json     @default("{}") // Daily/monthly budgets, critical tasks, enabled models
+  notificationDefaults      Json     @default("{}")
+  timezone                  String   @default("America/Los_Angeles")
+  workingHours              Json     @default("{}")
+  updatedAt                 DateTime @updatedAt
+  updatedById               String?
 
   // Relations
-  company Company @relation(fields: [companyId], references: [id])
+  company   Company @relation(fields: [companyId], references: [id])
+  updatedBy User?   @relation("CompanySettingsUpdatedBy", fields: [updatedById], references: [id])
+}
+
+// ═══════════════════════════════════════════
+// GOVERNMENT PROCUREMENT & COMPLIANCE
+// ═══════════════════════════════════════════
+
+model ComplianceDocument {
+  id              String            @id @default(uuid())
+  type            ComplianceDocType
+  name            String
+  issuer          String?
+  documentNumber  String?
+  issueDate       DateTime
+  expirationDate  DateTime?
+  fileUrl         String
+  isActive        Boolean           @default(true)
+  alertDaysBefore Int               @default(30)
+  notes           String?
+  uploadedById    String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  uploadedBy User? @relation("UploadedComplianceDocuments", fields: [uploadedById], references: [id])
+
+  @@index([type])
+  @@index([expirationDate])
+  @@index([isActive])
+}
+
+model VendorRegistration {
+  id                 String                   @id @default(uuid())
+  organizationId     String?
+  portalName         String
+  portalUrl          String?
+  username           String?
+  registrationNumber String?
+  status             VendorRegistrationStatus @default(pending)
+  registeredAt       DateTime?
+  expirationDate     DateTime?
+  categories         String[]                 @default([])
+  notes              String?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+  deletedAt          DateTime?
+
+  // Relations
+  organization Organization? @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId])
+  @@index([portalName])
+  @@index([status])
+  @@index([expirationDate])
+}
+
+model CooperativeContract {
+  id                  String   @id @default(uuid())
+  programName         String
+  contractNumber      String
+  manufacturer        String
+  productCategories   String[] @default([])
+  startDate           DateTime
+  endDate             DateTime
+  discountStructure   String?
+  maxOrderValue       Decimal?
+  participatingStates String[] @default([])
+  website             String?
+  isActive            Boolean  @default(true)
+  notes               String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  deletedAt           DateTime?
+
+  @@index([programName])
+  @@index([contractNumber])
+  @@index([manufacturer])
+  @@index([isActive])
+}
+
+model JurisdictionRule {
+  id               String   @id @default(uuid())
+  jurisdictionName String
+  jurisdictionType String   // 'state' | 'county' | 'city' | 'school_district' | 'special_district'
+  organizationId   String?
+  rules            Json     // ProcurementRules object
+  ethicsLimits     Json     // EthicsLimits object
+  lastVerified     DateTime
+  sourceUrl        String?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  deletedAt        DateTime?
+
+  // Relations
+  organization Organization? @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId])
+  @@index([jurisdictionType])
+  @@index([jurisdictionName])
+}
+
+model WageDetermination {
+  id                  String   @id @default(uuid())
+  state               String
+  county              String
+  tradeClassification String
+  journeymanRate      Decimal
+  fringeRate          Decimal
+  totalRate           Decimal
+  overtimeRate        Decimal
+  effectiveDate       DateTime
+  expirationDate      DateTime?
+  source              String   // 'davis_bacon' | 'state'
+  determinationNumber String?
+  lastUpdated         DateTime @updatedAt
+
+  @@index([state, county, tradeClassification])
+  @@index([expirationDate])
 }
 
 // ═══════════════════════════════════════════
@@ -456,6 +711,9 @@ model Organization {
   opportunities Opportunity[]
   bids          Bid[]
   projects      Project[]
+  vendorRegistrations VendorRegistration[]
+  jurisdictionRules   JurisdictionRule[]
+  signals       IntelligenceSignal[]
 
   @@index([name])
   @@index([type])
@@ -672,7 +930,6 @@ model Opportunity {
   notes             String?
   discoveredAt      DateTime          @default(now())
   bidExpectedBy     DateTime?
-  relatedBidId      String?           @unique
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
   deletedAt         DateTime?
@@ -681,8 +938,9 @@ model Opportunity {
   facility     Facility?    @relation(fields: [facilityId], references: [id])
   organization Organization @relation(fields: [organizationId], references: [id])
   assignedTo   User?        @relation("AssignedOpportunities", fields: [assignedToId], references: [id])
-  relatedBid   Bid?         @relation("OpportunityBid", fields: [relatedBidId], references: [id])
+  relatedBid   Bid?         @relation("OpportunityBid")
   estimates    Estimate[]   @relation("OpportunityEstimates")
+  signals      IntelligenceSignal[]
 
   @@index([organizationId])
   @@index([status])
@@ -725,20 +983,18 @@ model Bid {
   decisionById            String?
   assignedToId            String?
   estimatorId             String?
-  estimateId              String?     @unique
   submittedAt             DateTime?
   submittedAmount         Decimal?
   result                  BidResult?
   resultReason            String?
   winningAmount           Decimal?
   winningCompany          String?
-  projectId               String?     @unique
   createdAt               DateTime    @default(now())
   updatedAt               DateTime    @updatedAt
   deletedAt               DateTime?
 
   // Relations
-  opportunity  Opportunity?  @relation("OpportunityBid")
+  opportunity  Opportunity?  @relation("OpportunityBid", fields: [opportunityId], references: [id])
   organization Organization  @relation(fields: [organizationId], references: [id])
   decisionBy   User?         @relation("DecidedBids", fields: [decisionById], references: [id])
   assignedTo   User?         @relation("AssignedBids", fields: [assignedToId], references: [id])
@@ -746,11 +1002,113 @@ model Bid {
   estimate     Estimate?     @relation("BidEstimate")
   project      Project?      @relation("BidProject")
   interactions Interaction[]
+  decisionMatrices BidDecisionMatrix[]
+  submissionChecklist SubmissionChecklist?
+  calendarEntries BidCalendarEntry[]
+  winLossRecord WinLossRecord?
 
   @@index([submissionDeadline])
   @@index([status])
   @@index([organizationId])
+  @@index([opportunityId])
   @@index([bidNumber])
+}
+
+model BidDecisionMatrix {
+  id            String            @id @default(uuid())
+  bidId         String
+  factors       Json              // Array of BidDecisionFactor objects
+  totalScore    Int
+  recommendation BidRecommendation
+  submittedById String
+  approvedById  String?
+  approvalNotes String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  // Relations
+  bid         Bid   @relation(fields: [bidId], references: [id])
+  submittedBy User  @relation("SubmittedBidMatrices", fields: [submittedById], references: [id])
+  approvedBy  User? @relation("ApprovedBidMatrices", fields: [approvedById], references: [id])
+
+  @@index([bidId])
+  @@index([submittedById])
+}
+
+model SubmissionChecklist {
+  id                   String   @id @default(uuid())
+  bidId                String   @unique
+  completionPercentage Int      @default(0)
+  isComplete           Boolean  @default(false)
+  lastUpdatedAt        DateTime @updatedAt
+
+  // Relations
+  bid   Bid             @relation(fields: [bidId], references: [id])
+  items ChecklistItem[]
+}
+
+model ChecklistItem {
+  id          String   @id @default(uuid())
+  checklistId String
+  category    String   // 'document' | 'form' | 'bond' | 'signature' | 'addendum' | 'other'
+  description String
+  required    Boolean  @default(true)
+  completed   Boolean  @default(false)
+  completedAt DateTime?
+  completedById String?
+  attachmentUrl String?
+  notes       String?
+  dueDate     DateTime?
+
+  // Relations
+  checklist   SubmissionChecklist @relation(fields: [checklistId], references: [id])
+  completedBy User?               @relation("CompletedChecklistItems", fields: [completedById], references: [id])
+
+  @@index([checklistId])
+  @@index([completedById])
+}
+
+model BidCalendarEntry {
+  id           String            @id @default(uuid())
+  bidId        String
+  type         CalendarEntryType
+  title        String
+  date         DateTime
+  time         String?
+  location     String?
+  mandatory    Boolean           @default(false)
+  reminderDays Int[]             @default([])
+  assignedToIds String[]         @default([])
+  completed    Boolean           @default(false)
+  notes        String?
+
+  // Relations
+  bid Bid @relation(fields: [bidId], references: [id])
+
+  @@index([bidId])
+  @@index([date])
+}
+
+model WinLossRecord {
+  id               String    @id @default(uuid())
+  bidId            String    @unique
+  result           BidResult
+  ourAmount        Decimal?
+  winningAmount    Decimal?
+  winningCompany   String?
+  delta            Decimal?
+  deltaPercentage  Decimal?
+  factors          String[]  @default([])
+  debriefNotes     String?
+  lessonsLearned   String?
+  debriefedById    String?
+  debriefDate      DateTime?
+  createdAt        DateTime  @default(now())
+
+  // Relations
+  bid Bid @relation(fields: [bidId], references: [id])
+
+  @@index([result])
 }
 
 // ═══════════════════════════════════════════
@@ -910,7 +1268,6 @@ model Project {
   scheduleConstraints   String?
   prevailingWage        Boolean       @default(false)
   wageCounty            String?
-  crewIds               String[]      @default([])
   materialOrders        Json?         // Array of MaterialOrder objects
   changeOrders          Json?         // Array of ChangeOrder objects
   documents             Json?         // Array of ProjectDocument objects
@@ -926,11 +1283,53 @@ model Project {
   dailyLogs      DailyLog[]
   punchListItems PunchListItem[]
   interactions   Interaction[]
+  crewAssignments CrewAssignment[]
+  milestones      ProjectMilestone[]
 
   @@index([status])
   @@index([projectManagerId])
   @@index([organizationId])
   @@index([completionDate])
+}
+
+model CrewAssignment {
+  id        String    @id @default(uuid())
+  projectId String
+  userId    String
+  role      CrewRole
+  startDate DateTime
+  endDate   DateTime?
+  dailyRate Decimal?
+  notes     String?
+
+  // Relations
+  project Project @relation(fields: [projectId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([startDate, endDate])
+}
+
+model ProjectMilestone {
+  id          String          @id @default(uuid())
+  projectId   String
+  title       String
+  type        MilestoneType
+  plannedDate DateTime
+  actualDate  DateTime?
+  status      MilestoneStatus @default(pending)
+  dependsOnIds String[]       @default([])
+  assignedToId String?
+  notes       String?
+
+  // Relations
+  project    Project @relation(fields: [projectId], references: [id])
+  assignedTo User?   @relation("AssignedMilestones", fields: [assignedToId], references: [id])
+
+  @@index([projectId])
+  @@index([plannedDate])
+  @@index([status])
 }
 
 model DailyLog {
@@ -1012,11 +1411,47 @@ model IntelligenceSignal {
   deletedAt       DateTime?
 
   // Relations
-  facility Facility? @relation(fields: [facilityId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  facility     Facility?     @relation(fields: [facilityId], references: [id])
+  opportunity  Opportunity?  @relation(fields: [opportunityId], references: [id])
+  dismissedBy  User?         @relation("DismissedSignals", fields: [dismissedById], references: [id])
 
   @@index([type])
   @@index([processed, dismissed, createdAt(sort: Desc)])
   @@index([organizationId])
+}
+
+model MonitoredSource {
+  id            String     @id @default(uuid())
+  name          String
+  type          SourceType
+  url           String
+  scrapeConfig  Json       // ScrapeConfig object
+  schedule      String     // Cron expression
+  lastScrapedAt DateTime?
+  lastSuccessAt DateTime?
+  errorCount    Int        @default(0)
+  lastError     String?
+  isActive      Boolean    @default(true)
+  territoryIds  String[]   @default([])
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@index([type])
+  @@index([isActive])
+}
+
+model OpportunityScoreModel {
+  id                    String   @id @default(uuid())
+  name                  String
+  config                Json     // ScoreModelConfig object
+  isActive              Boolean  @default(false)
+  minimumScoreToSurface Int      @default(30)
+  autoAssignThreshold   Int      @default(60)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([isActive])
 }
 
 // ═══════════════════════════════════════════
@@ -1192,23 +1627,25 @@ model FileMetadata {
 // ═══════════════════════════════════════════
 
 model Notification {
-  id        String   @id @default(uuid())
-  userId    String
-  type      String   // Event type: 'bid.discovered', 'bid.deadline_approaching', etc.
-  title     String
-  body      String?
-  priority  String   @default("medium") // 'low' | 'medium' | 'high' | 'urgent'
-  channel   String   @default("in_app") // 'in_app' | 'push' | 'email'
-  readAt    DateTime?
+  id         String   @id @default(uuid())
+  userId     String
+  type       String   // Event type: 'bid.discovered', 'bid.deadline_approaching', etc.
+  title      String
+  body       String?
+  priority   String   @default("medium") // 'low' | 'medium' | 'high' | 'urgent'
+  channels   String[] @default([])       // 'in_app' | 'push' | 'email'
+  readAt     DateTime?
   entityType String?  // Related entity type
   entityId   String?  // Related entity ID
-  createdAt DateTime @default(now())
+  link       String?  // In-app URL path
+  createdAt  DateTime @default(now())
 
   // Relations
   user User @relation(fields: [userId], references: [id])
 
   @@index([userId, readAt])
   @@index([userId, createdAt(sort: Desc)])
+  @@index([entityType, entityId])
 }
 
 // ═══════════════════════════════════════════

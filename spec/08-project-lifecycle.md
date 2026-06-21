@@ -40,7 +40,7 @@ This module bridges office and field: project managers coordinate schedules and 
 
 ### Data Model
 
-Uses `Project`, `DailyLog`, `PunchListItem`, `MaterialOrder`, `ChangeOrder` from `02-domain-model.md`.
+Uses `Project`, `DailyLog`, and `PunchListItem` from `02-domain-model.md`. `MaterialOrder` and `ChangeOrder` are embedded JSON arrays on `Project` because they are edited and viewed within the project context for MVP.
 
 #### CrewAssignment
 ```typescript

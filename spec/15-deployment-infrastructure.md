@@ -4,6 +4,8 @@
 
 Salescraft is built and tested locally using Podman + podman-compose, then packaged for AWS deployment. The infrastructure is designed for a single company with 20-50 users — not hyper-scale. Simplicity and cost-efficiency are priorities. The deployment should be automated enough that a single developer can manage it.
 
+Local development uses Podman, not Docker Desktop. The API still includes an OCI-compatible `Dockerfile` for CI/ECS image builds; GitHub Actions may use Docker commands to build and push that image.
+
 ## Key Concepts
 
 - **Local Dev** — Podman-compose runs all services locally; application code runs natively (hot reload)
@@ -202,7 +204,7 @@ export class ApiStack extends cdk.Stack {
 
 // Web Stack
 export class WebStack extends cdk.Stack {
-  // S3 bucket for Next.js static export (or ECS for SSR)
+  // S3 bucket for Next.js static export
   // CloudFront distribution
   // Custom domain + ACM certificate
 }

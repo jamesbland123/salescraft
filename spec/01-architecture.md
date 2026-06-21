@@ -30,7 +30,7 @@ Salescraft's architecture serves one goal: enable a small commercial flooring co
 ### Frontend (Web)
 | Layer | Choice | Version | Rationale |
 |-------|--------|---------|-----------|
-| Framework | Next.js | 14+ (App Router) | SSR for SEO-irrelevant but fast initial loads, API routes for BFF |
+| Framework | Next.js | 14+ (App Router) | Static export SPA served from S3/CloudFront; no Next.js API routes |
 | UI Library | React | 18+ | Component model, ecosystem, shared with React Native |
 | Styling | Tailwind CSS | 3.x | Utility-first, consistent, fast iteration |
 | Component Library | shadcn/ui | latest | Accessible, customizable, Tailwind-native components |

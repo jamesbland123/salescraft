@@ -6,17 +6,19 @@
 
 Several entities are referenced throughout the Salescraft spec suite without formal schema definitions. This document provides the complete schemas for Company, Notification, and CompanySettings — filling the gaps so that implementation can proceed without ambiguity.
 
+The Prisma snippets here mirror `spec/24-complete-prisma-schema.md`; if they drift, `spec/24` is authoritative.
+
 ## Storage Decisions
 
 - **Company** — Separate Prisma model. Single row (one company per deployment). Created during bootstrap (`POST /api/v1/auth/setup`).
 - **Notification** — Separate Prisma model. One row per notification per user. High-write table; archive/purge notifications older than 90 days.
-- **CompanySettings** — Single-row Prisma model with JSON columns for nested configuration objects. Avoids schema migrations for config changes. Related to Company via `companyId` FK but kept separate to allow independent versioning of settings vs. identity.
+- **CompanySettings** — Single-row Prisma model. Scalar columns hold frequently used operating defaults; JSON columns hold nested configuration objects. Related to Company via `companyId` FK but kept separate to allow independent versioning of settings vs. identity.
 
 ## Key Concepts
 
 - **Single-Tenant** — There is exactly one Company row. All settings are scoped to that company.
 - **Notification Routing** — Notifications are created by the system based on `NotificationConfig` rules defined in spec 13. The Notification entity is the persisted result of that routing.
-- **Settings as JSON** — CompanySettings uses typed JSON columns so that adding a new scoring weight or notification default doesn't require a database migration.
+- **Settings as JSON where useful** — CompanySettings uses typed JSON columns for nested scoring, AI, notification, and working-hours configuration. Calculation defaults remain scalar so estimating logic can use them directly and validate them simply.
 
 ---
 
@@ -36,10 +38,6 @@ interface Company {
   phone?: string;                    // Main company phone number
   address: Address;                  // Reuses Address interface from 02-domain-model.md
   logoUrl?: string;                  // Company logo for proposals, PDF headers, and the UI
-  defaultOverheadPercentage: number; // Default overhead % applied to estimates (e.g., 12.5)
-  defaultProfitPercentage: number;   // Default profit margin % for estimates (e.g., 18.0)
-  minimumProfitPercentage: number;   // Alert threshold — bids below this trigger approval workflow (e.g., 15.0)
-  fiscalYearStartMonth: number;      // 1-12 (e.g., 7 for July) — affects reporting periods
   bondingCapacity?: number;          // Maximum bonding capacity in dollars
   licenseNumbers: LicenseEntry[];    // State contractor license numbers (can have multiple states)
   insuranceSummary?: string;         // Free-text summary of insurance coverage (GL, workers comp, etc.)
@@ -70,10 +68,6 @@ model Company {
   state                    String?
   zip                      String?
   logoUrl                  String?
-  defaultOverheadPercentage  Decimal @default(12.5)
-  defaultProfitPercentage    Decimal @default(18.0)
-  minimumProfitPercentage    Decimal @default(15.0)
-  fiscalYearStartMonth     Int       @default(7)
   bondingCapacity          Decimal?
   licenseNumbers           Json      @default("[]")   // LicenseEntry[]
   insuranceSummary         String?
@@ -89,12 +83,10 @@ model Company {
 **Validation rules:**
 - `name` — Required, 1-200 chars
 - `emailDomain` — Required, valid domain format (no `@` prefix)
-- `defaultOverheadPercentage` — 0-100
-- `defaultProfitPercentage` — 0-100
-- `minimumProfitPercentage` — 0-100, must be <= `defaultProfitPercentage`
-- `fiscalYearStartMonth` — 1-12
 - `bondingCapacity` — Positive number if provided
 - `licenseNumbers` — Array of valid LicenseEntry objects
+
+Operational defaults such as overhead, profit, labor rate, fiscal year, scoring, and AI budget live in `CompanySettings`, not `Company`. This avoids mixing legal/company identity with mutable operating policy.
 
 ---
 
@@ -115,7 +107,6 @@ interface Notification {
   channels: NotificationChannel[];   // Which channels were used to deliver this
   entityType?: string;               // The type of entity this relates to (e.g., "bid", "project", "contact")
   entityId?: string;                 // UUID of the related entity
-  isRead: boolean;                   // Whether the user has seen/acknowledged this
   readAt?: DateTime;                 // When it was marked read (null if unread)
   link?: string;                     // In-app URL path to navigate to (e.g., "/bids/uuid-here")
   createdAt: DateTime;
@@ -161,11 +152,10 @@ model Notification {
   type        String                          // NotificationType value
   title       String
   body        String
-  priority    NotificationPriority @default(medium)
+  priority    String    @default("medium")       // NotificationPriority value
   channels    String[]  @default([])          // NotificationChannel values
   entityType  String?
   entityId    String?
-  isRead      Boolean   @default(false)
   readAt      DateTime?
   link        String?
   createdAt   DateTime  @default(now())
@@ -173,23 +163,17 @@ model Notification {
   // Relations
   user        User      @relation(fields: [userId], references: [id])
 
-  @@index([userId, isRead])
+  @@index([userId, readAt])
   @@index([userId, createdAt(sort: Desc)])
   @@index([entityType, entityId])
 }
 
-enum NotificationPriority {
-  low
-  medium
-  high
-  urgent
-}
 ```
 
 **Behavior notes:**
 - Notifications are immutable once created (no update, only mark-read)
 - `GET /api/v1/notifications` returns paginated, sorted by `createdAt` DESC
-- Unread count is computed via `COUNT(*) WHERE userId = ? AND isRead = false`
+- Unread count is computed via `COUNT(*) WHERE userId = ? AND readAt IS NULL`
 - Notifications older than 90 days are archived/purged by a scheduled job
 - The `link` field enables click-through navigation from the notification center to the relevant entity
 
@@ -197,7 +181,7 @@ enum NotificationPriority {
 
 ### CompanySettings
 
-Configuration for the company stored as typed JSON columns. Single row, related to Company.
+Operational configuration for the company. Frequently used calculation defaults are stored as scalar columns; less frequently queried nested settings are stored as typed JSON columns. Single row, related to Company.
 
 **Referenced in:** `spec/13-user-roles-permissions.md` (settings:read/write permissions), `spec/17-ui-ux.md` (Settings screens for scoring weights, AI budget, notification preferences)
 
@@ -206,11 +190,20 @@ interface CompanySettings {
   id: string;                        // UUID
   companyId: string;                 // FK → Company (unique, one settings row per company)
 
+  // Estimating and operating defaults
+  defaultOverheadPct: number;         // Default overhead % applied to estimates
+  defaultProfitPct: number;           // Default profit % applied to estimates
+  minimumProfitPct: number;           // Approval threshold for low-margin bids
+  defaultWasteFactor: number;         // Default flooring waste percentage
+  standardLaborHourlyRate: number;    // Non-prevailing-wage labor rate
+  giftLimitDefault: number;           // Fallback ethics limit when jurisdiction data is absent
+  fiscalYearStartMonth: number;       // 1-12
+
   // Scoring configuration
   scoringWeights: ScoringWeights;
 
   // AI budget limits
-  aiBudget: AIBudget;
+  aiConfig: AIConfig;
 
   // Notification defaults
   notificationDefaults: NotificationDefaults;
@@ -245,10 +238,11 @@ interface RelationshipScoringWeights {
   // All weights should sum to 100
 }
 
-interface AIBudget {
-  dailyLimitCents: number;           // Max AI spend per day in cents (e.g., 2000 = $20.00)
-  monthlyLimitCents: number;         // Max AI spend per month in cents (e.g., 50000 = $500.00)
+interface AIConfig {
+  dailyBudgetUsd: number;            // Max AI spend per day (default 50)
+  monthlyBudgetUsd: number;          // Max AI spend per month (default 1000)
   alertThresholdPercent: number;     // Alert when usage exceeds this % of limit (e.g., 80)
+  criticalTasks: string[];           // Tasks allowed to bypass daily budget
   enabledModels: string[];           // Which AI models are allowed (e.g., ["claude-sonnet", "titan-embed"])
 }
 
@@ -282,28 +276,39 @@ interface DayHours {
 
 ```prisma
 model CompanySettings {
-  id                    String   @id @default(uuid())
-  companyId             String   @unique
-  scoringWeights        Json     @default("{}")   // ScoringWeights
-  aiBudget              Json     @default("{}")   // AIBudget
-  notificationDefaults  Json     @default("{}")   // NotificationDefaults
-  timezone              String   @default("America/Los_Angeles")
-  workingHours          Json     @default("{}")   // WorkingHours
-  updatedAt             DateTime @updatedAt
-  updatedById           String
+  id                        String   @id @default(uuid())
+  companyId                 String   @unique
+  defaultOverheadPct        Decimal  @default(15)
+  defaultProfitPct          Decimal  @default(10)
+  minimumProfitPct          Decimal  @default(5)
+  defaultWasteFactor        Decimal  @default(10)
+  standardLaborHourlyRate   Decimal  @default(45)
+  giftLimitDefault          Decimal  @default(50)
+  fiscalYearStartMonth      Int      @default(7)
+  scoringWeights            Json     @default("{}")   // ScoringWeights
+  aiConfig                  Json     @default("{}")   // AIConfig
+  notificationDefaults      Json     @default("{}")   // NotificationDefaults
+  timezone                  String   @default("America/Los_Angeles")
+  workingHours              Json     @default("{}")   // WorkingHours
+  updatedAt                 DateTime @updatedAt
+  updatedById               String?
 
   // Relations
-  company               Company  @relation(fields: [companyId], references: [id])
-  updatedBy             User     @relation(fields: [updatedById], references: [id])
+  company                   Company @relation(fields: [companyId], references: [id])
+  updatedBy                 User?   @relation(fields: [updatedById], references: [id])
 }
 ```
 
 **Validation rules:**
 - `scoringWeights.opportunity.*` — Each weight 0-100; all five must sum to 100
 - `scoringWeights.relationship.*` — Each weight 0-100; all four must sum to 100
-- `aiBudget.dailyLimitCents` — Positive integer
-- `aiBudget.monthlyLimitCents` — Positive integer, must be >= `dailyLimitCents`
-- `aiBudget.alertThresholdPercent` — 1-100
+- `defaultOverheadPct`, `defaultProfitPct`, `minimumProfitPct`, `defaultWasteFactor` — 0-100
+- `minimumProfitPct` — Must be <= `defaultProfitPct`
+- `standardLaborHourlyRate`, `giftLimitDefault` — Positive decimal
+- `fiscalYearStartMonth` — 1-12
+- `aiConfig.dailyBudgetUsd` — Positive number
+- `aiConfig.monthlyBudgetUsd` — Positive number, must be >= `dailyBudgetUsd`
+- `aiConfig.alertThresholdPercent` — 1-100
 - `timezone` — Must be a valid IANA timezone string
 - `workingHours` — Start must be before end for each working day
 - `notificationDefaults.minimumPriorityForPush` — Must be a valid NotificationPriority value
@@ -312,6 +317,13 @@ model CompanySettings {
 
 ```typescript
 const DEFAULT_COMPANY_SETTINGS: Omit<CompanySettings, 'id' | 'companyId' | 'updatedAt' | 'updatedById'> = {
+  defaultOverheadPct: 15,
+  defaultProfitPct: 10,
+  minimumProfitPct: 5,
+  defaultWasteFactor: 10,
+  standardLaborHourlyRate: 45,
+  giftLimitDefault: 50,
+  fiscalYearStartMonth: 7,
   scoringWeights: {
     opportunity: {
       budgetAvailability: 25,
@@ -327,10 +339,11 @@ const DEFAULT_COMPANY_SETTINGS: Omit<CompanySettings, 'id' | 'companyId' | 'upda
       breadth: 20,
     },
   },
-  aiBudget: {
-    dailyLimitCents: 2000,          // $20/day
-    monthlyLimitCents: 50000,       // $500/month
+  aiConfig: {
+    dailyBudgetUsd: 50,
+    monthlyBudgetUsd: 1000,
     alertThresholdPercent: 80,
+    criticalTasks: ['rfp_parsing', 'signal_classification'],
     enabledModels: ['claude-sonnet', 'titan-embed-v2'],
   },
   notificationDefaults: {

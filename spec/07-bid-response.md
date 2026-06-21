@@ -42,7 +42,7 @@ Beyond compliance, this module helps the team make intelligent bid/no-bid decisi
 
 ### Data Model
 
-Uses `Bid`, `BidDocument`, `Addendum` entities from `02-domain-model.md`.
+Uses `Bid` from `02-domain-model.md`. `BidDocument` and `Addendum` are embedded JSON arrays on `Bid` because they are always managed within a bid for MVP.
 
 #### BidDecisionMatrix
 Structured bid/no-bid scoring.
