@@ -209,7 +209,10 @@ experiments/artifacts/{trial_id}/
 
 `manifest.json` records the trial declaration. `input-digest.json` hashes the
 fixed experiment inputs so mismatched prompts, specs, or protocols are easy to
-detect.
+detect. `final-status.txt` is a semantic summary with the trial outcome,
+archive time, build completion/blocker fields, next eligible work, and final
+workspace git status. A clean generated workspace is recorded as
+`workspace_git_status: clean` rather than an empty file.
 
 ## Comparing Tools
 

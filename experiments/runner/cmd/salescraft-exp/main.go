@@ -299,6 +299,25 @@ func verifyIteration(cfg TrialConfig, iteration int) error {
 }
 
 func archive(cfg TrialConfig) error {
+	workspace := workspacePath(cfg)
+	outcome := "archived"
+	message := "archive command completed"
+	if state, err := readBuildState(workspace); err == nil {
+		switch {
+		case state.Complete:
+			outcome = "completed"
+			message = "build state has no in-progress, blocked, or next eligible items"
+		case state.Blocked:
+			outcome = "blocked"
+			message = state.BlockedSummary
+		default:
+			message = "archive command completed before build completion"
+		}
+	}
+	return archiveWithStatus(cfg, outcome, message)
+}
+
+func archiveWithStatus(cfg TrialConfig, outcome, message string) error {
 	statusf("archive: trial=%s", cfg.TrialID)
 	workspace := workspacePath(cfg)
 	artifactDir := artifactPath(cfg)
@@ -311,7 +330,8 @@ func archive(cfg TrialConfig) error {
 
 	status, _ := gitOutput(workspace, "status", "--short")
 	diff, _ := gitOutput(workspace, "diff", "--binary")
-	if err := os.WriteFile(filepath.Join(artifactDir, "final-status.txt"), []byte(status), 0o644); err != nil {
+	finalStatus := finalStatusText(cfg, workspace, outcome, message, status)
+	if err := os.WriteFile(filepath.Join(artifactDir, "final-status.txt"), []byte(finalStatus), 0o644); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(artifactDir, "final-diff.patch"), []byte(diff), 0o644); err != nil {
@@ -322,6 +342,60 @@ func archive(cfg TrialConfig) error {
 	}
 	statusf("archive: wrote %s", artifactDir)
 	return nil
+}
+
+func finalStatusText(cfg TrialConfig, workspace, outcome, message, gitStatus string) string {
+	var b strings.Builder
+	b.WriteString("trial_id: ")
+	b.WriteString(cfg.TrialID)
+	b.WriteString("\n")
+	b.WriteString("outcome: ")
+	b.WriteString(outcome)
+	b.WriteString("\n")
+	b.WriteString("archived_at: ")
+	b.WriteString(time.Now().UTC().Format(time.RFC3339))
+	b.WriteString("\n")
+	if message != "" {
+		b.WriteString("message: ")
+		b.WriteString(squashWhitespace(message))
+		b.WriteString("\n")
+	}
+
+	if state, err := readBuildState(workspace); err == nil {
+		b.WriteString("build_complete: ")
+		b.WriteString(fmt.Sprintf("%t", state.Complete))
+		b.WriteString("\n")
+		b.WriteString("build_blocked: ")
+		b.WriteString(fmt.Sprintf("%t", state.Blocked))
+		b.WriteString("\n")
+		b.WriteString("next_eligible: ")
+		b.WriteString(state.NextEligibleSummary)
+		b.WriteString("\n")
+		if state.Blocked {
+			b.WriteString("blocked_summary: ")
+			b.WriteString(state.BlockedSummary)
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString("build_state_error: ")
+		b.WriteString(squashWhitespace(err.Error()))
+		b.WriteString("\n")
+	}
+
+	gitStatus = strings.TrimSpace(gitStatus)
+	if gitStatus == "" {
+		b.WriteString("workspace_git_status: clean\n")
+	} else {
+		b.WriteString("workspace_git_status: dirty\n")
+		b.WriteString("workspace_git_status_short:\n")
+		b.WriteString(gitStatus)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func squashWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func clean(cfg TrialConfig) error {
@@ -348,26 +422,26 @@ func trial(cfg TrialConfig) error {
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		statusf("trial: iteration %d/%d", iteration, maxIterations)
 		if err := runToolIteration(cfg, iteration); err != nil {
-			_ = archive(cfg)
+			_ = archiveWithStatus(cfg, "tool_failed", err.Error())
 			return err
 		}
 
 		state, err := readBuildState(workspacePath(cfg))
 		if err != nil {
-			_ = archive(cfg)
+			_ = archiveWithStatus(cfg, "build_state_unreadable", err.Error())
 			return err
 		}
 		if state.Blocked {
-			_ = archive(cfg)
+			_ = archiveWithStatus(cfg, "blocked", state.BlockedSummary)
 			return fmt.Errorf("build blocked after iteration %d: %s", iteration, state.BlockedSummary)
 		}
 
 		if err := verifyIteration(cfg, iteration); err != nil {
-			_ = archive(cfg)
+			_ = archiveWithStatus(cfg, "verification_failed", err.Error())
 			return err
 		}
 		if state.Complete {
-			if err := archive(cfg); err != nil {
+			if err := archiveWithStatus(cfg, "completed", fmt.Sprintf("build complete after %d iterations", iteration)); err != nil {
 				return err
 			}
 			statusf("trial: build complete after %d iterations", iteration)
@@ -377,7 +451,7 @@ func trial(cfg TrialConfig) error {
 		}
 		statusf("trial: continuing; next eligible: %s", state.NextEligibleSummary)
 	}
-	if err := archive(cfg); err != nil {
+	if err := archiveWithStatus(cfg, "max_iterations_reached", fmt.Sprintf("max_iterations reached before build completion: %d", maxIterations)); err != nil {
 		return err
 	}
 	statusf("trial: workspace retained for manual testing: %s", workspacePath(cfg))
