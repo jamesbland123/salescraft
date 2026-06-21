@@ -66,6 +66,13 @@ was launched with no approval prompts and full shell/filesystem/network access:
 tmux new-session -d -s salescraft-watch -c /Users/james/dev/salescraft './experiments/scripts/watch-experiment.sh --config experiments/configs/phase1-codex-gpt.json'
 ```
 
+For unattended runs where the operator is allowed to repair the local Podman VM,
+add `--repair-podman`:
+
+```bash
+tmux new-session -d -s salescraft-watch -c /Users/james/dev/salescraft './experiments/scripts/watch-experiment.sh --config experiments/configs/phase1-codex-gpt.json --repair-podman'
+```
+
 Watch the operator:
 
 ```bash

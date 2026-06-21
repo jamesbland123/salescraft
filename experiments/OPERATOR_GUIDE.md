@@ -26,6 +26,14 @@ approval-gated sandbox:
 tmux new-session -d -s salescraft-watch -c /Users/james/dev/salescraft './experiments/scripts/watch-experiment.sh --config experiments/configs/phase1-codex-gpt.json'
 ```
 
+For unattended runs where the operator may repair Podman, include
+`--repair-podman`. This can remove and recreate the default Podman machine, so
+only use it when the Podman VM is disposable experiment infrastructure:
+
+```bash
+tmux new-session -d -s salescraft-watch -c /Users/james/dev/salescraft './experiments/scripts/watch-experiment.sh --config experiments/configs/phase1-codex-gpt.json --repair-podman'
+```
+
 For an AI operator, this means starting the operator in the tool's no-approval,
 full-access mode. For Codex, use the equivalent of:
 
@@ -224,6 +232,8 @@ podman ps
 
 Do not launch the experiment until `podman ps` succeeds.
 
+The watcher can do this automatically when launched with `--repair-podman`.
+
 ## Trial Restart Rules
 
 When a setup issue blocks a run:
@@ -309,7 +319,7 @@ Before starting:
 5. Start the trial in tmux with a keepalive loop after command exit.
 
 Use this tmux pattern:
-tmux new-session -d -s salescraft-watch -c /Users/james/dev/salescraft './experiments/scripts/watch-experiment.sh --config experiments/configs/phase1-codex-gpt.json'
+tmux new-session -d -s salescraft-watch -c /Users/james/dev/salescraft './experiments/scripts/watch-experiment.sh --config experiments/configs/phase1-codex-gpt.json --repair-podman'
 
 Monitor frequently:
 - tmux capture-pane -t salescraft-watch -p -S -120

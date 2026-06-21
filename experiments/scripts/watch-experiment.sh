@@ -6,6 +6,7 @@ config_path="experiments/configs/phase1-codex-gpt.json"
 session_name="salescraft-exp"
 interval_seconds=60
 skip_podman=0
+repair_podman=0
 
 usage() {
   cat <<'EOF'
@@ -17,6 +18,7 @@ Options:
   --session NAME      tmux session for the experiment. Default: salescraft-exp
   --interval SECONDS  Poll interval. Default: 60
   --skip-podman       Skip Podman preflight. Use only for trials that cannot reach Podman work.
+  --repair-podman     Try to recreate the default Podman machine if `podman ps` fails.
   -h, --help          Show this help.
 
 This script is an outer experiment watcher. It keeps the experiment tmux session
@@ -72,6 +74,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --skip-podman)
       skip_podman=1
+      shift
+      ;;
+    --repair-podman)
+      repair_podman=1
       shift
       ;;
     -h|--help)
@@ -138,8 +144,39 @@ preflight() {
   if [ "$skip_podman" -eq 0 ]; then
     command -v podman >/dev/null 2>&1 || die "podman is required; install it or use --skip-podman for non-Podman trials"
     command -v podman-compose >/dev/null 2>&1 || die "podman-compose is required; install it or use --skip-podman for non-Podman trials"
-    podman ps >/dev/null || die "podman ps failed; start/fix the Podman machine before launching the experiment"
+    if ! podman ps >/dev/null; then
+      if [ "$repair_podman" -eq 1 ]; then
+        repair_podman_machine
+      else
+        die "podman ps failed; start/fix the Podman machine before launching the experiment, or rerun with --repair-podman"
+      fi
+    fi
   fi
+}
+
+wait_for_podman() {
+  local attempt
+  for attempt in $(seq 1 30); do
+    if podman ps >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+repair_podman_machine() {
+  log "podman ps failed; attempting Podman machine repair"
+  podman machine stop podman-machine-default >/dev/null 2>&1 || true
+  podman machine rm -f podman-machine-default >/dev/null 2>&1 || true
+  podman machine init --cpus 2 --memory 4096 --disk-size 30 --timezone UTC podman-machine-default
+  podman machine start podman-machine-default
+  if ! wait_for_podman; then
+    podman machine list || true
+    podman system connection list || true
+    die "podman repair did not make podman ps succeed"
+  fi
+  log "podman is ready"
 }
 
 write_run_script() {
