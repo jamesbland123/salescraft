@@ -1,5 +1,5 @@
 {
-  "trial_id": "phase1-codex-gpt-run02",
+  "trial_id": "phase1-codex-gpt-run03",
   "phase": "phase1-toolchain-native-baseline",
   "allowed_variable": "toolchain",
   "baseline_ref": "HEAD",
@@ -13,7 +13,7 @@
     "command": "zsh",
     "args": [
       "-lc",
-      "codex exec -c 'model_provider=\"openai\"' --model gpt-5.5 < PROMPT.md"
+      "codex exec -c 'model_provider=\"amazon-bedrock\"' --model openai.gpt-5.5 < PROMPT.md"
     ],
     "env": {}
   },
