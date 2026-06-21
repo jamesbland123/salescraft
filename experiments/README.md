@@ -17,7 +17,7 @@ experiments/
 |-- configs/
 |   |-- phase1-aider-sonnet.example.json
 |   |-- phase1-claude-code-sonnet.example.json
-|   |-- phase1-codex-sonnet.example.json
+|   |-- phase1-codex-gpt.example.json
 |   |-- phase1-opencode-sonnet.example.json
 |   `-- phase1-openhands-sonnet.example.json
 |-- runner/
@@ -42,17 +42,17 @@ This creates `experiments/runner/salescraft-exp`.
 A normal trial has five steps:
 
 ```bash
-./experiments/runner/salescraft-exp prepare --config experiments/configs/phase1-codex-sonnet.example.json
-./experiments/runner/salescraft-exp run --config experiments/configs/phase1-codex-sonnet.example.json
-./experiments/runner/salescraft-exp verify --config experiments/configs/phase1-codex-sonnet.example.json
-./experiments/runner/salescraft-exp archive --config experiments/configs/phase1-codex-sonnet.example.json
-./experiments/runner/salescraft-exp clean --config experiments/configs/phase1-codex-sonnet.example.json
+./experiments/runner/salescraft-exp prepare --config experiments/configs/phase1-codex-gpt.example.json
+./experiments/runner/salescraft-exp run --config experiments/configs/phase1-codex-gpt.example.json
+./experiments/runner/salescraft-exp verify --config experiments/configs/phase1-codex-gpt.example.json
+./experiments/runner/salescraft-exp archive --config experiments/configs/phase1-codex-gpt.example.json
+./experiments/runner/salescraft-exp clean --config experiments/configs/phase1-codex-gpt.example.json
 ```
 
 Or run the full lifecycle:
 
 ```bash
-./experiments/runner/salescraft-exp trial --config experiments/configs/phase1-codex-sonnet.example.json
+./experiments/runner/salescraft-exp trial --config experiments/configs/phase1-codex-gpt.example.json
 ```
 
 ## Reset Model
@@ -112,6 +112,12 @@ Using explicit arrays makes command capture more reproducible.
 The example configs include starter command lines for Codex, Claude Code,
 OpenCode, Aider, and OpenHands. Confirm each command against the installed tool
 version before using the config for recorded trials.
+
+Codex uses GPT-family models. The Codex config is therefore a native toolchain
+baseline (`toolchain` variable), not a pure tool-only comparison against
+Sonnet-backed tools. For a pure tool comparison, include only tools that can run
+the same fixed model, or create a separate GPT-backed config for each tool that
+supports that model.
 
 ## Artifacts
 

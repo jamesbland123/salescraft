@@ -1,7 +1,7 @@
 {
-  "trial_id": "phase1-codex-sonnet-run01",
-  "phase": "phase1-tool-baseline",
-  "allowed_variable": "tool",
+  "trial_id": "phase1-codex-gpt-run01",
+  "phase": "phase1-toolchain-native-baseline",
+  "allowed_variable": "toolchain",
   "baseline_ref": "HEAD",
   "repo_root": ".",
   "workspace_root": "experiments/trials",
@@ -13,14 +13,14 @@
     "command": "zsh",
     "args": [
       "-lc",
-      "codex exec < PROMPT.md"
+      "codex exec --model gpt-5 < PROMPT.md"
     ],
     "env": {}
   },
   "models": {
-    "planning": "bedrock-anthropic.claude-sonnet-4",
-    "code": "bedrock-anthropic.claude-sonnet-4",
-    "test": "bedrock-anthropic.claude-sonnet-4",
+    "planning": "openai.gpt-5",
+    "code": "openai.gpt-5",
+    "test": "openai.gpt-5",
     "judge": "bedrock-anthropic.claude-opus-4"
   },
   "sampling": {
