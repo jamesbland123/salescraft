@@ -329,14 +329,15 @@ func trial(cfg TrialConfig) error {
 		runErr = err
 	}
 	archiveErr := archive(cfg)
-	cleanErr := clean(cfg)
 	if runErr != nil {
 		return runErr
 	}
 	if archiveErr != nil {
 		return archiveErr
 	}
-	return cleanErr
+	statusf("trial: workspace retained for manual testing: %s", workspacePath(cfg))
+	statusf("trial: run clean explicitly when testing is complete")
+	return nil
 }
 
 func runCaptured(workdir, command string, args []string, env map[string]string, stdoutPath, stderrPath string) (CommandResult, error) {

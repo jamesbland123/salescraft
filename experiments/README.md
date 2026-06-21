@@ -39,20 +39,28 @@ This creates `experiments/runner/salescraft-exp`.
 
 ## Trial Lifecycle
 
-A normal trial has five steps:
+A normal trial has four automated steps:
 
 ```bash
 ./experiments/runner/salescraft-exp prepare --config experiments/configs/phase1-codex-gpt.json
 ./experiments/runner/salescraft-exp run --config experiments/configs/phase1-codex-gpt.json
 ./experiments/runner/salescraft-exp verify --config experiments/configs/phase1-codex-gpt.json
 ./experiments/runner/salescraft-exp archive --config experiments/configs/phase1-codex-gpt.json
-./experiments/runner/salescraft-exp clean --config experiments/configs/phase1-codex-gpt.json
 ```
 
-Or run the full lifecycle:
+Or run the full automated lifecycle:
 
 ```bash
 ./experiments/runner/salescraft-exp trial --config experiments/configs/phase1-codex-gpt.json
+```
+
+`trial` does not clean up the workspace. It leaves
+`experiments/trials/{trial_id}` available so you can launch, inspect, and test
+the generated app after archival. When manual testing is complete, remove the
+workspace explicitly:
+
+```bash
+./experiments/runner/salescraft-exp clean --config experiments/configs/phase1-codex-gpt.json
 ```
 
 The runner streams tool and verification output to the console while also
@@ -69,7 +77,8 @@ golden repo commit
   -> selected tool runs only inside that worktree
   -> fixed verification commands run
   -> artifacts are archived
-  -> worktree is removed
+  -> worktree is retained for manual testing
+  -> worktree is removed later with explicit clean
 ```
 
 Do not run Codex, Claude Code, OpenCode, or other tools directly in the golden
