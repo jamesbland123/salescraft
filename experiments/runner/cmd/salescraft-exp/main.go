@@ -233,7 +233,7 @@ func runTool(cfg TrialConfig) error {
 	stdoutPath := filepath.Join(artifactDir, "tool-stdout.log")
 	stderrPath := filepath.Join(artifactDir, "tool-stderr.log")
 	statusf("run: trial=%s tool=%s command=%s", cfg.TrialID, cfg.Tool.Name, strings.Join(append([]string{cfg.Tool.Command}, cfg.Tool.Args...), " "))
-	result, err := runCaptured(workspace, cfg.Tool.Command, cfg.Tool.Args, cfg.Tool.Env, stdoutPath, stderrPath)
+	result, err := runCaptured(workspace, cfg.Tool.Command, cfg.Tool.Args, trialEnv(cfg, workspace, artifactDir), stdoutPath, stderrPath)
 	writeErr := writeJSON(filepath.Join(artifactDir, "tool-result.json"), result)
 	if err != nil {
 		return fmt.Errorf("%w; see %s and %s", err, stdoutPath, stderrPath)
@@ -268,7 +268,7 @@ func verify(cfg TrialConfig) error {
 		_, _ = fmt.Fprintf(logFile, "\n$ %s\n", strings.Join(command, " "))
 		stdout := io.MultiWriter(logFile, os.Stdout)
 		stderr := io.MultiWriter(logFile, os.Stderr)
-		result := runWithWriters(workspace, command[0], command[1:], nil, stdout, stderr)
+		result := runWithWriters(workspace, command[0], command[1:], trialEnv(cfg, workspace, artifactDir), stdout, stderr)
 		results = append(results, result)
 		if result.ExitCode != 0 {
 			_ = writeJSON(filepath.Join(artifactDir, "verify-result.json"), results)
@@ -424,9 +424,28 @@ func formatDuration(ms int64) string {
 
 func mergedEnv(extra map[string]string) []string {
 	env := os.Environ()
-	env = append(env, "SALESCRAFT_EXPERIMENT_RUNNER=salescraft-exp")
 	for k, v := range extra {
 		env = append(env, k+"="+v)
+	}
+	return env
+}
+
+func trialEnv(cfg TrialConfig, workspace, artifactDir string) map[string]string {
+	cacheRoot := filepath.Join(os.TempDir(), "salescraft-exp", cfg.TrialID)
+	env := map[string]string{
+		"SALESCRAFT_EXPERIMENT_RUNNER": "salescraft-exp",
+		"SALESCRAFT_TRIAL_ID":          cfg.TrialID,
+		"SALESCRAFT_WORKSPACE":         workspace,
+		"SALESCRAFT_ARTIFACT_DIR":      artifactDir,
+		"SALESCRAFT_CACHE_DIR":         cacheRoot,
+		"COREPACK_HOME":                filepath.Join(cacheRoot, "corepack"),
+		"NPM_CONFIG_CACHE":             filepath.Join(cacheRoot, "npm"),
+		"npm_config_cache":             filepath.Join(cacheRoot, "npm"),
+		"PNPM_HOME":                    filepath.Join(cacheRoot, "pnpm-home"),
+		"XDG_CACHE_HOME":               filepath.Join(cacheRoot, "xdg"),
+	}
+	for k, v := range cfg.Tool.Env {
+		env[k] = v
 	}
 	return env
 }

@@ -108,7 +108,7 @@ Commands are arrays, not shell strings. If a tool needs shell behavior, call a
 shell explicitly, for example:
 
 ```json
-["zsh", "-lc", "codex exec -c 'model_provider=\"amazon-bedrock\"' --model openai.gpt-5.5 < PROMPT.md"]
+["zsh", "-lc", "codex exec -c 'model_provider=\"amazon-bedrock\"' -c 'sandbox_workspace_write.network_access=true' -c 'shell_environment_policy.inherit=\"all\"' --model openai.gpt-5.5 < PROMPT.md"]
 ```
 
 Using explicit arrays makes command capture more reproducible.
@@ -123,6 +123,11 @@ model slug `openai.gpt-5.5`. It is therefore a native Bedrock toolchain baseline
 (`toolchain` variable), not a pure tool-only comparison against Sonnet-backed
 tools. For a pure tool comparison, include only tools that can run the same
 fixed model.
+
+The runner injects per-trial package-manager cache paths under
+`/tmp/salescraft-exp/{trial_id}` so Corepack, npm, and pnpm do not write into the
+user home directory. For tools with their own execution sandbox, the tool config
+must also allow package-manager network access when `package_install` is enabled.
 
 ## Artifacts
 
