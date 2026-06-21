@@ -786,11 +786,18 @@ func tarGz(srcDir, destPath string) error {
 			}
 			return nil
 		}
-		info, err := d.Info()
+		info, err := os.Lstat(path)
 		if err != nil {
 			return err
 		}
-		header, err := tar.FileInfoHeader(info, "")
+		linkTarget := ""
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err = os.Readlink(path)
+			if err != nil {
+				return err
+			}
+		}
+		header, err := tar.FileInfoHeader(info, linkTarget)
 		if err != nil {
 			return err
 		}
@@ -798,7 +805,7 @@ func tarGz(srcDir, destPath string) error {
 		if err := tw.WriteHeader(header); err != nil {
 			return err
 		}
-		if d.IsDir() {
+		if d.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
 		f, err := os.Open(path)
@@ -813,15 +820,13 @@ func tarGz(srcDir, destPath string) error {
 
 func shouldSkipArchive(rel string, d os.DirEntry) bool {
 	parts := strings.Split(filepath.ToSlash(rel), "/")
-	if len(parts) == 0 {
-		return false
+	for _, part := range parts {
+		switch part {
+		case ".git", "node_modules", ".next", "dist", "build", ".turbo", "coverage":
+			return true
+		}
 	}
-	switch parts[0] {
-	case ".git", "node_modules", ".next", "dist", "build", ".turbo", "coverage":
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 func workspacePath(cfg TrialConfig) string {
