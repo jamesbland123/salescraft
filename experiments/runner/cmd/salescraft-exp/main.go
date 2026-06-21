@@ -448,14 +448,29 @@ func sectionItems(content, header string) []string {
 			continue
 		}
 		if strings.HasPrefix(line, "- [ ]") || strings.HasPrefix(line, "- [x]") {
-			items = append(items, strings.TrimSpace(line[5:]))
+			item := strings.TrimSpace(line[5:])
+			if !isEmptySectionItem(item) {
+				items = append(items, item)
+			}
 			continue
 		}
 		if strings.HasPrefix(line, "- ") {
-			items = append(items, strings.TrimSpace(strings.TrimPrefix(line, "- ")))
+			item := strings.TrimSpace(strings.TrimPrefix(line, "- "))
+			if !isEmptySectionItem(item) {
+				items = append(items, item)
+			}
 		}
 	}
 	return items
+}
+
+func isEmptySectionItem(item string) bool {
+	switch strings.ToLower(strings.TrimSpace(item)) {
+	case "", "none", "none yet.":
+		return true
+	default:
+		return false
+	}
 }
 
 func loopMaxIterations(cfg TrialConfig) int {
