@@ -33,9 +33,19 @@ log() {
   printf '[salescraft-watch] %s\n' "$*"
 }
 
+finish() {
+  local status="$1"
+  if [ -n "${TMUX:-}" ] && [ "${WATCH_EXPERIMENT_NO_KEEPALIVE:-0}" != "1" ]; then
+    log "watcher stopped with status $status; keeping tmux pane alive for inspection"
+    log "close this pane with: exit, Ctrl-d, or tmux kill-session -t $session_name"
+    while true; do sleep 3600; done
+  fi
+  exit "$status"
+}
+
 die() {
   log "error: $*"
-  exit 1
+  finish 1
 }
 
 while [ "$#" -gt 0 ]; do
@@ -189,11 +199,11 @@ print_terminal_summary() {
 
   if [ "$status" = "0" ]; then
     log "trial completed successfully; workspace retained for manual testing"
-    exit 0
+    finish 0
   fi
 
   log "trial stopped before completion; classify this as setup vs app-building before restarting"
-  exit "$status"
+  finish "$status"
 }
 
 preflight
