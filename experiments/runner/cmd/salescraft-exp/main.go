@@ -191,8 +191,11 @@ func prepare(cfg TrialConfig) error {
 		return err
 	}
 
-	if _, err := gitOutput(cfg.RepoRoot, "worktree", "add", "--detach", workspace, sha); err != nil {
-		return fmt.Errorf("create worktree: %w", err)
+	if _, err := gitOutput(cfg.RepoRoot, "clone", "--local", "--no-hardlinks", cfg.RepoRoot, workspace); err != nil {
+		return fmt.Errorf("create trial clone: %w", err)
+	}
+	if _, err := gitOutput(workspace, "checkout", "--detach", sha); err != nil {
+		return fmt.Errorf("checkout baseline in trial clone: %w", err)
 	}
 	statusf("prepare: created workspace %s", workspace)
 
@@ -221,6 +224,10 @@ func prepare(cfg TrialConfig) error {
 }
 
 func runTool(cfg TrialConfig) error {
+	return runToolIteration(cfg, 0)
+}
+
+func runToolIteration(cfg TrialConfig, iteration int) error {
 	workspace := workspacePath(cfg)
 	artifactDir := artifactPath(cfg)
 	if !exists(workspace) {
@@ -230,11 +237,11 @@ func runTool(cfg TrialConfig) error {
 		return err
 	}
 
-	stdoutPath := filepath.Join(artifactDir, "tool-stdout.log")
-	stderrPath := filepath.Join(artifactDir, "tool-stderr.log")
+	stdoutPath := filepath.Join(artifactDir, iterationFile("tool", iteration, "stdout.log"))
+	stderrPath := filepath.Join(artifactDir, iterationFile("tool", iteration, "stderr.log"))
 	statusf("run: trial=%s tool=%s command=%s", cfg.TrialID, cfg.Tool.Name, strings.Join(append([]string{cfg.Tool.Command}, cfg.Tool.Args...), " "))
 	result, err := runCaptured(workspace, cfg.Tool.Command, cfg.Tool.Args, trialEnv(cfg, workspace, artifactDir), stdoutPath, stderrPath)
-	writeErr := writeJSON(filepath.Join(artifactDir, "tool-result.json"), result)
+	writeErr := writeJSON(filepath.Join(artifactDir, iterationFile("tool", iteration, "result.json")), result)
 	if err != nil {
 		return fmt.Errorf("%w; see %s and %s", err, stdoutPath, stderrPath)
 	}
@@ -243,6 +250,10 @@ func runTool(cfg TrialConfig) error {
 }
 
 func verify(cfg TrialConfig) error {
+	return verifyIteration(cfg, 0)
+}
+
+func verifyIteration(cfg TrialConfig, iteration int) error {
 	workspace := workspacePath(cfg)
 	artifactDir := artifactPath(cfg)
 	if !exists(workspace) {
@@ -252,7 +263,7 @@ func verify(cfg TrialConfig) error {
 		return err
 	}
 
-	logPath := filepath.Join(artifactDir, "verify-log.txt")
+	logPath := filepath.Join(artifactDir, iterationFile("verify", iteration, "log.txt"))
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		return err
@@ -271,12 +282,12 @@ func verify(cfg TrialConfig) error {
 		result := runWithWriters(workspace, command[0], command[1:], trialEnv(cfg, workspace, artifactDir), stdout, stderr)
 		results = append(results, result)
 		if result.ExitCode != 0 {
-			_ = writeJSON(filepath.Join(artifactDir, "verify-result.json"), results)
+			_ = writeJSON(filepath.Join(artifactDir, iterationFile("verify", iteration, "result.json")), results)
 			return fmt.Errorf("verification failed: %s", strings.Join(command, " "))
 		}
 		statusf("verify: passed in %s", formatDuration(result.DurationMS))
 	}
-	return writeJSON(filepath.Join(artifactDir, "verify-result.json"), results)
+	return writeJSON(filepath.Join(artifactDir, iterationFile("verify", iteration, "result.json")), results)
 }
 
 func archive(cfg TrialConfig) error {
@@ -310,9 +321,12 @@ func clean(cfg TrialConfig) error {
 	if !exists(workspace) {
 		return nil
 	}
+	if err := ensureWorkspacePath(cfg, workspace); err != nil {
+		return err
+	}
 	statusf("clean: removing workspace %s", workspace)
-	if _, err := gitOutput(cfg.RepoRoot, "worktree", "remove", "--force", workspace); err != nil {
-		return fmt.Errorf("remove worktree: %w", err)
+	if err := os.RemoveAll(workspace); err != nil {
+		return fmt.Errorf("remove workspace: %w", err)
 	}
 	statusf("clean: removed workspace")
 	return nil
@@ -322,22 +336,149 @@ func trial(cfg TrialConfig) error {
 	if err := prepare(cfg); err != nil {
 		return err
 	}
-	var runErr error
-	if err := runTool(cfg); err != nil {
-		runErr = err
-	} else if err := verify(cfg); err != nil {
-		runErr = err
+	maxIterations := loopMaxIterations(cfg)
+	for iteration := 1; iteration <= maxIterations; iteration++ {
+		statusf("trial: iteration %d/%d", iteration, maxIterations)
+		if err := runToolIteration(cfg, iteration); err != nil {
+			_ = archive(cfg)
+			return err
+		}
+
+		state, err := readBuildState(workspacePath(cfg))
+		if err != nil {
+			_ = archive(cfg)
+			return err
+		}
+		if state.Blocked {
+			_ = archive(cfg)
+			return fmt.Errorf("build blocked after iteration %d: %s", iteration, state.BlockedSummary)
+		}
+
+		if err := verifyIteration(cfg, iteration); err != nil {
+			_ = archive(cfg)
+			return err
+		}
+		if state.Complete {
+			if err := archive(cfg); err != nil {
+				return err
+			}
+			statusf("trial: build complete after %d iterations", iteration)
+			statusf("trial: workspace retained for manual testing: %s", workspacePath(cfg))
+			statusf("trial: run clean explicitly when testing is complete")
+			return nil
+		}
+		statusf("trial: continuing; next eligible: %s", state.NextEligibleSummary)
 	}
-	archiveErr := archive(cfg)
-	if runErr != nil {
-		return runErr
-	}
-	if archiveErr != nil {
-		return archiveErr
+	if err := archive(cfg); err != nil {
+		return err
 	}
 	statusf("trial: workspace retained for manual testing: %s", workspacePath(cfg))
 	statusf("trial: run clean explicitly when testing is complete")
-	return nil
+	return fmt.Errorf("max_iterations reached before build completion: %d", maxIterations)
+}
+
+type BuildStateStatus struct {
+	Blocked             bool
+	Complete            bool
+	BlockedSummary      string
+	NextEligibleSummary string
+}
+
+func readBuildState(workspace string) (BuildStateStatus, error) {
+	path := filepath.Join(workspace, "BUILD_STATE.md")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return BuildStateStatus{}, fmt.Errorf("read BUILD_STATE.md: %w", err)
+	}
+	content := string(b)
+	status := strings.ToLower(strings.TrimSpace(firstHeaderValue(content, "## Status:")))
+	blockedItems := sectionItems(content, "## Blocked")
+	inProgressItems := sectionItems(content, "## In Progress")
+	nextEligibleItems := sectionItems(content, "## Next Eligible")
+	completedItems := sectionItems(content, "## Completed")
+
+	blocked := strings.Contains(status, "blocked") || len(blockedItems) > 0
+	blockedSummary := "status=blocked"
+	if len(blockedItems) > 0 {
+		blockedSummary = strings.Join(blockedItems, "; ")
+	}
+	nextSummary := "none"
+	if len(nextEligibleItems) > 0 {
+		nextSummary = strings.Join(nextEligibleItems, ", ")
+	}
+	complete := !blocked && len(inProgressItems) == 0 && len(nextEligibleItems) == 0 && len(completedItems) > 0
+
+	return BuildStateStatus{
+		Blocked:             blocked,
+		Complete:            complete,
+		BlockedSummary:      blockedSummary,
+		NextEligibleSummary: nextSummary,
+	}, nil
+}
+
+func firstHeaderValue(content, prefix string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
+func sectionItems(content, header string) []string {
+	lines := strings.Split(content, "\n")
+	inSection := false
+	var items []string
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "## ") {
+			inSection = line == header
+			continue
+		}
+		if !inSection || line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "- [ ]") || strings.HasPrefix(line, "- [x]") {
+			items = append(items, strings.TrimSpace(line[5:]))
+			continue
+		}
+		if strings.HasPrefix(line, "- ") {
+			items = append(items, strings.TrimSpace(strings.TrimPrefix(line, "- ")))
+		}
+	}
+	return items
+}
+
+func loopMaxIterations(cfg TrialConfig) int {
+	const defaultMaxIterations = 1
+	raw, ok := cfg.Loop["max_iterations"]
+	if !ok {
+		return defaultMaxIterations
+	}
+	switch v := raw.(type) {
+	case float64:
+		if v > 0 {
+			return int(v)
+		}
+	case int:
+		if v > 0 {
+			return v
+		}
+	case string:
+		var parsed int
+		if _, err := fmt.Sscanf(v, "%d", &parsed); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return defaultMaxIterations
+}
+
+func iterationFile(prefix string, iteration int, suffix string) string {
+	if iteration <= 0 {
+		return prefix + "-" + suffix
+	}
+	return fmt.Sprintf("%s-iteration-%03d-%s", prefix, iteration, suffix)
 }
 
 func runCaptured(workdir, command string, args []string, env map[string]string, stdoutPath, stderrPath string) (CommandResult, error) {
@@ -624,6 +765,29 @@ func artifactPath(cfg TrialConfig) string {
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func ensureWorkspacePath(cfg TrialConfig, workspace string) error {
+	workspaceRoot, err := filepath.Abs(cfg.WorkspaceRoot)
+	if err != nil {
+		return err
+	}
+	workspaceAbs, err := filepath.Abs(workspace)
+	if err != nil {
+		return err
+	}
+	expected := filepath.Join(workspaceRoot, cfg.TrialID)
+	if workspaceAbs != expected {
+		return fmt.Errorf("refusing to clean unexpected workspace path: %s", workspaceAbs)
+	}
+	rel, err := filepath.Rel(workspaceRoot, workspaceAbs)
+	if err != nil {
+		return err
+	}
+	if rel == "." || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("refusing to clean workspace outside workspace root: %s", workspaceAbs)
+	}
+	return nil
 }
 
 func exitOnErr(err error) {

@@ -69,16 +69,17 @@ writing the same output to artifact logs. Long-running commands emit a
 
 ## Reset Model
 
-Each trial starts from a clean git worktree at `baseline_ref`.
+Each trial starts from a clean local clone at `baseline_ref`.
 
 ```text
 golden repo commit
-  -> disposable worktree in experiments/trials/{trial_id}
-  -> selected tool runs only inside that worktree
-  -> fixed verification commands run
+  -> disposable clone in experiments/trials/{trial_id}
+  -> selected tool runs only inside that clone
+  -> fixed verification commands run after each iteration
+  -> runner repeats until BUILD_STATE has no next eligible work, a blocker appears, or max_iterations is reached
   -> artifacts are archived
-  -> worktree is retained for manual testing
-  -> worktree is removed later with explicit clean
+  -> clone is retained for manual testing
+  -> clone is removed later with explicit clean
 ```
 
 Do not run Codex, Claude Code, OpenCode, or other tools directly in the golden
