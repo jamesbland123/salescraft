@@ -15,7 +15,11 @@ the runner.
 experiments/
 |-- README.md
 |-- configs/
-|   `-- phase1-codex-sonnet.example.json
+|   |-- phase1-aider-sonnet.example.json
+|   |-- phase1-claude-code-sonnet.example.json
+|   |-- phase1-codex-sonnet.example.json
+|   |-- phase1-opencode-sonnet.example.json
+|   `-- phase1-openhands-sonnet.example.json
 |-- runner/
 |   |-- go.mod
 |   `-- cmd/salescraft-exp/main.go
@@ -105,6 +109,10 @@ shell explicitly, for example:
 
 Using explicit arrays makes command capture more reproducible.
 
+The example configs include starter command lines for Codex, Claude Code,
+OpenCode, Aider, and OpenHands. Confirm each command against the installed tool
+version before using the config for recorded trials.
+
 ## Artifacts
 
 Each trial writes:
@@ -146,4 +154,3 @@ variable:
 - cache policy
 
 When comparing models, keep the tool fixed.
-
