@@ -71,7 +71,14 @@ pnpm dev
 
 ## Documentation
 
-All specifications live in the `spec/` directory:
+The autonomous build docs are split by purpose:
+
+- `PROMPT.md` - short AI agent entry point
+- `BUILD_PLAN.md` - phased dependency graph, iteration protocol, verification gates
+- `AGENT_OPERATING_MODEL.md` - subagent, skill, MCP, tool, handoff, and logging rules
+- `EVALUATION_PROTOCOL.md` - controls for model and toolchain evaluation
+
+Product specifications live in the `spec/` directory:
 
 - `spec/00-vision.md` — Product vision, personas, competitive positioning
 - `spec/01-architecture.md` — Tech stack, project structure, module patterns, API conventions
@@ -81,7 +88,7 @@ All specifications live in the `spec/` directory:
 - `spec/24-complete-prisma-schema.md` — Full database schema
 - `spec/25-project-configuration.md` — All config files verbatim
 
-The `PROMPT.md` file contains the AI agent build loop protocol with a phased dependency graph for implementation.
+Use `PROMPT.md` as the starting point for autonomous builds; it points to the detailed build and agent operating documents.
 
 ## Target Users
 
