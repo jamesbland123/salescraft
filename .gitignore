@@ -1,0 +1,5 @@
+experiments/.cache/
+experiments/trials/
+experiments/artifacts/
+experiments/results.sqlite*
+experiments/runner/salescraft-exp

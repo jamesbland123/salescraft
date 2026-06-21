@@ -1,0 +1,55 @@
+{
+  "trial_id": "phase1-codex-sonnet-run01",
+  "phase": "phase1-model-baseline",
+  "allowed_variable": "code_model",
+  "baseline_ref": "HEAD",
+  "repo_root": ".",
+  "workspace_root": "experiments/trials",
+  "artifact_root": "experiments/artifacts",
+  "cache_policy": "cold",
+  "tool": {
+    "name": "codex",
+    "version": "record-with-codex-version-command",
+    "command": "zsh",
+    "args": [
+      "-lc",
+      "codex exec < PROMPT.md"
+    ],
+    "env": {}
+  },
+  "models": {
+    "planning": "bedrock-anthropic.claude-sonnet-4",
+    "code": "bedrock-anthropic.claude-sonnet-4",
+    "test": "bedrock-anthropic.claude-sonnet-4",
+    "judge": "bedrock-anthropic.claude-opus-4"
+  },
+  "sampling": {
+    "temperature": 0,
+    "top_p": 1,
+    "max_tokens": 8192
+  },
+  "loop": {
+    "strategy": "test-driven",
+    "max_iterations": 5
+  },
+  "context": {
+    "strategy": "artifact-only"
+  },
+  "capabilities": {
+    "profile": "standard-autonomous",
+    "browser": true,
+    "subagents": true,
+    "package_install": true,
+    "skills": "existing-only",
+    "mcp": "existing-only"
+  },
+  "verification": {
+    "commands": [
+      ["pnpm", "typecheck"],
+      ["pnpm", "lint"],
+      ["pnpm", "test"],
+      ["pnpm", "build"]
+    ]
+  }
+}
+
