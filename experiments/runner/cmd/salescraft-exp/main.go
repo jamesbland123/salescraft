@@ -229,7 +229,7 @@ func runTool(cfg TrialConfig) error {
 	result, err := runCaptured(workspace, cfg.Tool.Command, cfg.Tool.Args, cfg.Tool.Env, stdoutPath, stderrPath)
 	writeErr := writeJSON(filepath.Join(artifactDir, "tool-result.json"), result)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w; see %s and %s", err, stdoutPath, stderrPath)
 	}
 	return writeErr
 }
@@ -336,7 +336,7 @@ func runCaptured(workdir, command string, args []string, env map[string]string, 
 
 	result := runWithWriters(workdir, command, args, env, stdout, stderr)
 	if result.ExitCode != 0 {
-		return result, fmt.Errorf("command failed: %s", command)
+		return result, fmt.Errorf("command failed with exit code %d: %s", result.ExitCode, strings.Join(result.Command, " "))
 	}
 	return result, nil
 }

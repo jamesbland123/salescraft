@@ -104,7 +104,7 @@ Commands are arrays, not shell strings. If a tool needs shell behavior, call a
 shell explicitly, for example:
 
 ```json
-["zsh", "-lc", "codex exec < PROMPT.md"]
+["zsh", "-lc", "codex exec -c 'model_provider=\"openai\"' --model gpt-5.5 < PROMPT.md"]
 ```
 
 Using explicit arrays makes command capture more reproducible.
@@ -113,11 +113,12 @@ The example configs include starter command lines for Codex, Claude Code,
 OpenCode, Aider, and OpenHands. Confirm each command against the installed tool
 version before using the config for recorded trials.
 
-Codex uses GPT-family models. The Codex config is therefore a native toolchain
-baseline (`toolchain` variable), not a pure tool-only comparison against
-Sonnet-backed tools. For a pure tool comparison, include only tools that can run
-the same fixed model, or create a separate GPT-backed config for each tool that
-supports that model.
+Codex uses GPT-family models. The Codex config explicitly overrides the model
+provider to `openai` so it does not inherit a Bedrock provider from local Codex
+settings. It is therefore a native toolchain baseline (`toolchain` variable),
+not a pure tool-only comparison against Sonnet-backed tools. For a pure tool
+comparison, include only tools that can run the same fixed model, or create a
+separate GPT-backed config for each tool that supports that model.
 
 ## Artifacts
 
