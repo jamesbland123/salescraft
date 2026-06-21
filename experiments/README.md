@@ -85,6 +85,25 @@ Watch the experiment directly:
 tmux attach -t salescraft-exp
 ```
 
+For multi-hour runs where you want a durable AI operator, start a third tmux
+session. This is separate from the evaluated model. It periodically snapshots
+tmux, process, Podman, and artifact state, then runs one bounded noninteractive
+Codex operator turn:
+
+```bash
+tmux new-session -d -s salescraft-operator -c /Users/james/dev/salescraft './experiments/scripts/operator-loop.sh --config experiments/configs/phase1-codex-gpt.json --interval 900'
+```
+
+Watch the operator loop:
+
+```bash
+tmux attach -t salescraft-operator
+```
+
+Use this only for the outer operator. Do not use `salescraft-operator` as the
+evaluated tool session. The operator prompt limits action to setup, host
+environment, tmux, Podman, runner/config, logging, and artifact handling.
+
 `trial` does not clean up the workspace. It leaves
 `experiments/trials/{trial_id}` available so you can launch, inspect, and test
 the generated app after archival. When manual testing is complete, remove the

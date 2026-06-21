@@ -50,6 +50,25 @@ in the experiment config. For Codex trials, the config must include the
 no-approval/full-access flags needed for the model to make commits and install
 packages inside the disposable trial workspace.
 
+For a durable operator that survives chat turn limits, use the operator loop.
+It runs as a third tmux session and periodically starts a fresh noninteractive
+Codex operator turn using `experiments/prompts/operator-loop.md` plus a generated
+local status snapshot:
+
+```bash
+tmux new-session -d -s salescraft-operator -c /Users/james/dev/salescraft './experiments/scripts/operator-loop.sh --config experiments/configs/phase1-codex-gpt.json --interval 900'
+```
+
+The three-session model is:
+
+- `salescraft-watch`: shell watcher/orchestrator for process supervision
+- `salescraft-exp`: evaluated model and runner lifecycle
+- `salescraft-operator`: periodic AI operator for setup-only decisions
+
+The operator loop is opt-in. Adding or updating it does not affect an already
+running watcher or experiment unless you start the `salescraft-operator` tmux
+session.
+
 Do not use unattended mode to bypass reproducibility checks. A dirty golden repo,
 existing trial workspace, existing artifact directory, or failed `podman ps`
 should still stop the watcher before a trial starts.
@@ -65,6 +84,11 @@ The AI operator owns the outer loop:
 - fix setup issues only
 - bump and commit `trial_id` before fresh restarts
 - preserve artifacts and trial workspaces for later inspection
+
+When the operator is implemented as `experiments/scripts/operator-loop.sh`, it
+must treat each Codex invocation as one bounded decision turn. If the experiment
+is still running, it should inspect and exit successfully; the shell loop will
+call it again later.
 
 Allowed:
 
@@ -149,8 +173,15 @@ and starts the experiment in its own tmux session:
 tmux new-session -d -s salescraft-watch -c /Users/james/dev/salescraft './experiments/scripts/watch-experiment.sh --config experiments/configs/phase1-codex-gpt.json'
 ```
 
+For persistent AI supervision, start the operator loop after the watcher:
+
+```bash
+tmux new-session -d -s salescraft-operator -c /Users/james/dev/salescraft './experiments/scripts/operator-loop.sh --config experiments/configs/phase1-codex-gpt.json --interval 900'
+```
+
 Attach to the watcher with `tmux attach -t salescraft-watch`. Attach to the
-experiment with `tmux attach -t salescraft-exp`.
+experiment with `tmux attach -t salescraft-exp`. Attach to the AI operator loop
+with `tmux attach -t salescraft-operator`.
 
 Attach:
 
@@ -267,6 +298,16 @@ The AI operator should not wait for human confirmation for routine inspection,
 trial-id bumps, commits of experiment setup changes, or relaunching after a
 confirmed setup-only failure. It should ask before destructive cleanup, OS-level
 privileged changes, or anything that would alter generated app code.
+
+For long unattended runs, prefer launching the durable operator loop instead of
+depending on a single chat session:
+
+```bash
+tmux new-session -d -s salescraft-operator -c /Users/james/dev/salescraft './experiments/scripts/operator-loop.sh --config experiments/configs/phase1-codex-gpt.json --interval 900'
+```
+
+The loop writes snapshots and logs under
+`$TMPDIR/salescraft-exp-operator/{trial_id}`.
 
 ## Bootstrap Prompt
 
