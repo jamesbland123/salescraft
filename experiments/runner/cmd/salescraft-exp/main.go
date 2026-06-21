@@ -165,6 +165,7 @@ func absFromRepo(repoRoot, p string) (string, error) {
 }
 
 func prepare(cfg TrialConfig) error {
+	statusf("prepare: trial=%s baseline=%s", cfg.TrialID, cfg.BaselineRef)
 	if err := ensureCleanRepo(cfg.RepoRoot); err != nil {
 		return err
 	}
@@ -193,6 +194,7 @@ func prepare(cfg TrialConfig) error {
 	if _, err := gitOutput(cfg.RepoRoot, "worktree", "add", "--detach", workspace, sha); err != nil {
 		return fmt.Errorf("create worktree: %w", err)
 	}
+	statusf("prepare: created workspace %s", workspace)
 
 	manifest := map[string]any{
 		"trial_config": cfg,
@@ -211,7 +213,11 @@ func prepare(cfg TrialConfig) error {
 	if err != nil {
 		return err
 	}
-	return writeJSON(filepath.Join(artifactDir, "input-digest.json"), digest)
+	if err := writeJSON(filepath.Join(artifactDir, "input-digest.json"), digest); err != nil {
+		return err
+	}
+	statusf("prepare: wrote artifacts %s", artifactDir)
+	return nil
 }
 
 func runTool(cfg TrialConfig) error {
@@ -226,11 +232,13 @@ func runTool(cfg TrialConfig) error {
 
 	stdoutPath := filepath.Join(artifactDir, "tool-stdout.log")
 	stderrPath := filepath.Join(artifactDir, "tool-stderr.log")
+	statusf("run: trial=%s tool=%s command=%s", cfg.TrialID, cfg.Tool.Name, strings.Join(append([]string{cfg.Tool.Command}, cfg.Tool.Args...), " "))
 	result, err := runCaptured(workspace, cfg.Tool.Command, cfg.Tool.Args, cfg.Tool.Env, stdoutPath, stderrPath)
 	writeErr := writeJSON(filepath.Join(artifactDir, "tool-result.json"), result)
 	if err != nil {
 		return fmt.Errorf("%w; see %s and %s", err, stdoutPath, stderrPath)
 	}
+	statusf("run: completed in %s", formatDuration(result.DurationMS))
 	return writeErr
 }
 
@@ -256,20 +264,23 @@ func verify(cfg TrialConfig) error {
 		if len(command) == 0 {
 			continue
 		}
+		statusf("verify: running %s", strings.Join(command, " "))
 		_, _ = fmt.Fprintf(logFile, "\n$ %s\n", strings.Join(command, " "))
-		stdout := io.MultiWriter(logFile)
-		stderr := io.MultiWriter(logFile)
+		stdout := io.MultiWriter(logFile, os.Stdout)
+		stderr := io.MultiWriter(logFile, os.Stderr)
 		result := runWithWriters(workspace, command[0], command[1:], nil, stdout, stderr)
 		results = append(results, result)
 		if result.ExitCode != 0 {
 			_ = writeJSON(filepath.Join(artifactDir, "verify-result.json"), results)
 			return fmt.Errorf("verification failed: %s", strings.Join(command, " "))
 		}
+		statusf("verify: passed in %s", formatDuration(result.DurationMS))
 	}
 	return writeJSON(filepath.Join(artifactDir, "verify-result.json"), results)
 }
 
 func archive(cfg TrialConfig) error {
+	statusf("archive: trial=%s", cfg.TrialID)
 	workspace := workspacePath(cfg)
 	artifactDir := artifactPath(cfg)
 	if !exists(workspace) {
@@ -287,7 +298,11 @@ func archive(cfg TrialConfig) error {
 	if err := os.WriteFile(filepath.Join(artifactDir, "final-diff.patch"), []byte(diff), 0o644); err != nil {
 		return err
 	}
-	return tarGz(workspace, filepath.Join(artifactDir, "generated-repo.tar.gz"))
+	if err := tarGz(workspace, filepath.Join(artifactDir, "generated-repo.tar.gz")); err != nil {
+		return err
+	}
+	statusf("archive: wrote %s", artifactDir)
+	return nil
 }
 
 func clean(cfg TrialConfig) error {
@@ -295,9 +310,11 @@ func clean(cfg TrialConfig) error {
 	if !exists(workspace) {
 		return nil
 	}
+	statusf("clean: removing workspace %s", workspace)
 	if _, err := gitOutput(cfg.RepoRoot, "worktree", "remove", "--force", workspace); err != nil {
 		return fmt.Errorf("remove worktree: %w", err)
 	}
+	statusf("clean: removed workspace")
 	return nil
 }
 
@@ -334,7 +351,7 @@ func runCaptured(workdir, command string, args []string, env map[string]string, 
 	}
 	defer stderr.Close()
 
-	result := runWithWriters(workdir, command, args, env, stdout, stderr)
+	result := runWithWriters(workdir, command, args, env, io.MultiWriter(stdout, os.Stdout), io.MultiWriter(stderr, os.Stderr))
 	if result.ExitCode != 0 {
 		return result, fmt.Errorf("command failed with exit code %d: %s", result.ExitCode, strings.Join(result.Command, " "))
 	}
@@ -343,16 +360,25 @@ func runCaptured(workdir, command string, args []string, env map[string]string, 
 
 func runWithWriters(workdir, command string, args []string, env map[string]string, stdout, stderr io.Writer) CommandResult {
 	start := time.Now().UTC()
+	fullCommand := append([]string{command}, args...)
+	statusf("command: start %s", strings.Join(fullCommand, " "))
 	cmd := exec.Command(command, args...)
 	cmd.Dir = workdir
 	cmd.Env = mergedEnv(env)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	err := cmd.Run()
+
+	err := cmd.Start()
+	if err == nil {
+		done := make(chan struct{})
+		go heartbeat(done, start, fullCommand)
+		err = cmd.Wait()
+		close(done)
+	}
 	finish := time.Now().UTC()
 
 	result := CommandResult{
-		Command:    append([]string{command}, args...),
+		Command:    fullCommand,
 		StartedAt:  start,
 		FinishedAt: finish,
 		DurationMS: finish.Sub(start).Milliseconds(),
@@ -367,7 +393,33 @@ func runWithWriters(workdir, command string, args []string, env map[string]strin
 			result.ExitCode = -1
 		}
 	}
+	if result.ExitCode == 0 {
+		statusf("command: completed in %s", formatDuration(result.DurationMS))
+	} else {
+		statusf("command: failed after %s with exit code %d", formatDuration(result.DurationMS), result.ExitCode)
+	}
 	return result
+}
+
+func heartbeat(done <-chan struct{}, start time.Time, command []string) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case now := <-ticker.C:
+			statusf("command: still running after %s: %s", now.Sub(start).Round(time.Second), strings.Join(command, " "))
+		}
+	}
+}
+
+func statusf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "[salescraft-exp] "+format+"\n", args...)
+}
+
+func formatDuration(ms int64) string {
+	return (time.Duration(ms) * time.Millisecond).Round(time.Millisecond).String()
 }
 
 func mergedEnv(extra map[string]string) []string {

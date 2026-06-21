@@ -15,11 +15,11 @@ the runner.
 experiments/
 |-- README.md
 |-- configs/
-|   |-- phase1-aider-sonnet.example.json
-|   |-- phase1-claude-code-sonnet.example.json
-|   |-- phase1-codex-gpt.example.json
-|   |-- phase1-opencode-sonnet.example.json
-|   `-- phase1-openhands-sonnet.example.json
+|   |-- phase1-aider-sonnet.json
+|   |-- phase1-claude-code-sonnet.json
+|   |-- phase1-codex-gpt.json
+|   |-- phase1-opencode-sonnet.json
+|   `-- phase1-openhands-sonnet.json
 |-- runner/
 |   |-- go.mod
 |   `-- cmd/salescraft-exp/main.go
@@ -42,18 +42,22 @@ This creates `experiments/runner/salescraft-exp`.
 A normal trial has five steps:
 
 ```bash
-./experiments/runner/salescraft-exp prepare --config experiments/configs/phase1-codex-gpt.example.json
-./experiments/runner/salescraft-exp run --config experiments/configs/phase1-codex-gpt.example.json
-./experiments/runner/salescraft-exp verify --config experiments/configs/phase1-codex-gpt.example.json
-./experiments/runner/salescraft-exp archive --config experiments/configs/phase1-codex-gpt.example.json
-./experiments/runner/salescraft-exp clean --config experiments/configs/phase1-codex-gpt.example.json
+./experiments/runner/salescraft-exp prepare --config experiments/configs/phase1-codex-gpt.json
+./experiments/runner/salescraft-exp run --config experiments/configs/phase1-codex-gpt.json
+./experiments/runner/salescraft-exp verify --config experiments/configs/phase1-codex-gpt.json
+./experiments/runner/salescraft-exp archive --config experiments/configs/phase1-codex-gpt.json
+./experiments/runner/salescraft-exp clean --config experiments/configs/phase1-codex-gpt.json
 ```
 
 Or run the full lifecycle:
 
 ```bash
-./experiments/runner/salescraft-exp trial --config experiments/configs/phase1-codex-gpt.example.json
+./experiments/runner/salescraft-exp trial --config experiments/configs/phase1-codex-gpt.json
 ```
+
+The runner streams tool and verification output to the console while also
+writing the same output to artifact logs. Long-running commands emit a
+`[salescraft-exp] command: still running...` heartbeat every 30 seconds.
 
 ## Reset Model
 
@@ -109,9 +113,9 @@ shell explicitly, for example:
 
 Using explicit arrays makes command capture more reproducible.
 
-The example configs include starter command lines for Codex, Claude Code,
-OpenCode, Aider, and OpenHands. Confirm each command against the installed tool
-version before using the config for recorded trials.
+The configs include command lines for Codex, Claude Code, OpenCode, Aider, and
+OpenHands. Treat these files as the canonical trial declarations. If a tool
+command changes, update the config and commit it before running `prepare`.
 
 Codex uses GPT-family models exposed through Bedrock. The Codex config
 explicitly pins `model_provider` to `amazon-bedrock` and uses the Bedrock-visible

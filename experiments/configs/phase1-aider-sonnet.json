@@ -1,5 +1,5 @@
 {
-  "trial_id": "phase1-opencode-sonnet-run01",
+  "trial_id": "phase1-aider-sonnet-run01",
   "phase": "phase1-tool-baseline",
   "allowed_variable": "tool",
   "baseline_ref": "HEAD",
@@ -8,12 +8,12 @@
   "artifact_root": "experiments/artifacts",
   "cache_policy": "cold",
   "tool": {
-    "name": "opencode",
-    "version": "record-with-opencode-version-command",
+    "name": "aider",
+    "version": "record-with-aider-version-command",
     "command": "zsh",
     "args": [
       "-lc",
-      "opencode run < PROMPT.md"
+      "aider --yes-always --message-file PROMPT.md"
     ],
     "env": {}
   },
@@ -52,4 +52,3 @@
     ]
   }
 }
-
