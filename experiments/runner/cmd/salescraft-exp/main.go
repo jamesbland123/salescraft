@@ -65,9 +65,12 @@ func main() {
 	}
 
 	cmd := os.Args[1]
-	configPath := parseConfigFlag(os.Args[2:])
+	configPath, trialIDOverride := parseFlags(os.Args[2:])
 	cfg, err := loadConfig(configPath)
 	exitOnErr(err)
+	if trialIDOverride != "" {
+		cfg.TrialID = trialIDOverride
+	}
 
 	switch cmd {
 	case "prepare":
@@ -78,6 +81,8 @@ func main() {
 		err = verify(cfg)
 	case "archive":
 		err = archive(cfg)
+	case "evaluate":
+		err = evaluate(cfg)
 	case "clean":
 		err = clean(cfg)
 	case "trial":
@@ -89,18 +94,19 @@ func main() {
 }
 
 func usageAndExit() {
-	fmt.Fprintf(os.Stderr, "usage: salescraft-exp {prepare|run|verify|archive|clean|trial} --config path/to/trial.json\n")
+	fmt.Fprintf(os.Stderr, "usage: salescraft-exp {prepare|run|verify|archive|evaluate|clean|trial} --config path/to/trial.json [--trial-id id]\n")
 	os.Exit(2)
 }
 
-func parseConfigFlag(args []string) string {
+func parseFlags(args []string) (string, string) {
 	fs := flag.NewFlagSet("salescraft-exp", flag.ExitOnError)
 	configPath := fs.String("config", "", "trial config JSON path")
+	trialID := fs.String("trial-id", "", "override trial_id from the config")
 	_ = fs.Parse(args)
 	if *configPath == "" {
 		usageAndExit()
 	}
-	return *configPath
+	return *configPath, *trialID
 }
 
 func loadConfig(path string) (TrialConfig, error) {
@@ -257,6 +263,35 @@ func verify(cfg TrialConfig) error {
 	return verifyIteration(cfg, 0)
 }
 
+type EvaluationResult struct {
+	TrialID              string                 `json:"trial_id"`
+	GeneratedAt          time.Time              `json:"generated_at"`
+	Workspace            string                 `json:"workspace"`
+	ArtifactDir          string                 `json:"artifact_dir"`
+	Outcome              string                 `json:"outcome"`
+	Tool                 string                 `json:"tool"`
+	Phase                string                 `json:"phase"`
+	AllowedVariable      string                 `json:"allowed_variable"`
+	Models               map[string]string      `json:"models"`
+	BuildComplete        bool                   `json:"build_complete"`
+	BuildBlocked         bool                   `json:"build_blocked"`
+	NextEligible         string                 `json:"next_eligible"`
+	CompletedItems       []string               `json:"completed_items"`
+	IterationCount       int                    `json:"iteration_count"`
+	ToolDurationMS       int64                  `json:"tool_duration_ms"`
+	RunnerVerifyPasses   int                    `json:"runner_verify_passes"`
+	RunnerVerifyFailures int                    `json:"runner_verify_failures"`
+	EvaluatorCommands    []CommandResult        `json:"evaluator_commands"`
+	EvaluatorPassed      bool                   `json:"evaluator_passed"`
+	FinalStatus          map[string]string      `json:"final_status"`
+	ArtifactFiles        []string               `json:"artifact_files"`
+	WorkspaceStats       map[string]int         `json:"workspace_stats"`
+	PackageScripts       map[string][]string    `json:"package_scripts"`
+	Notes                []string               `json:"notes,omitempty"`
+	Environment          map[string]string      `json:"environment"`
+	InputDigest          map[string]interface{} `json:"input_digest,omitempty"`
+}
+
 func verifyIteration(cfg TrialConfig, iteration int) error {
 	workspace := workspacePath(cfg)
 	artifactDir := artifactPath(cfg)
@@ -296,6 +331,418 @@ func verifyIteration(cfg TrialConfig, iteration int) error {
 		statusf("verify: passed in %s", formatDuration(result.DurationMS))
 	}
 	return writeJSON(filepath.Join(artifactDir, iterationFile("verify", iteration, "result.json")), results)
+}
+
+func evaluate(cfg TrialConfig) error {
+	statusf("evaluate: trial=%s", cfg.TrialID)
+	workspace := workspacePath(cfg)
+	artifactDir := artifactPath(cfg)
+	if !exists(workspace) {
+		return fmt.Errorf("trial workspace does not exist: %s", workspace)
+	}
+	if !exists(artifactDir) {
+		return fmt.Errorf("artifact directory does not exist: %s", artifactDir)
+	}
+
+	logPath := filepath.Join(artifactDir, "evaluation-log.txt")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+
+	evalResults := runEvaluationCommands(cfg, workspace, artifactDir, logFile)
+	report, err := buildEvaluationResult(cfg, evalResults)
+	if err != nil {
+		return err
+	}
+	if err := writeJSON(filepath.Join(artifactDir, "evaluation-result.json"), report); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "final-report.md"), []byte(finalReportMarkdown(report)), 0o644); err != nil {
+		return err
+	}
+	statusf("evaluate: wrote %s", filepath.Join(artifactDir, "final-report.md"))
+	if !report.EvaluatorPassed {
+		return fmt.Errorf("evaluation failed; see %s", logPath)
+	}
+	return nil
+}
+
+func runEvaluationCommands(cfg TrialConfig, workspace, artifactDir string, logFile io.Writer) []CommandResult {
+	var results []CommandResult
+	for _, command := range cfg.Verification.Commands {
+		if len(command) == 0 {
+			continue
+		}
+		statusf("evaluate: running %s", strings.Join(command, " "))
+		_, _ = fmt.Fprintf(logFile, "\n$ %s\n", strings.Join(command, " "))
+		stdout := io.MultiWriter(logFile, os.Stdout)
+		stderr := io.MultiWriter(logFile, os.Stderr)
+		env, err := trialEnv(cfg, workspace, artifactDir)
+		if err != nil {
+			results = append(results, CommandResult{
+				Command:    command,
+				StartedAt:  time.Now().UTC(),
+				FinishedAt: time.Now().UTC(),
+				ExitCode:   -1,
+				Error:      err.Error(),
+			})
+			continue
+		}
+		result := runWithWriters(workspace, command[0], command[1:], env, stdout, stderr)
+		results = append(results, result)
+	}
+	return results
+}
+
+func buildEvaluationResult(cfg TrialConfig, evalResults []CommandResult) (EvaluationResult, error) {
+	workspace := workspacePath(cfg)
+	artifactDir := artifactPath(cfg)
+	state, stateErr := readBuildState(workspace)
+	finalStatus, _ := readKeyValueFile(filepath.Join(artifactDir, "final-status.txt"))
+	artifactFiles, _ := artifactFileList(artifactDir)
+	toolResults, _ := commandResultsFromGlob(filepath.Join(artifactDir, "tool-iteration-*-result.json"))
+	verifyResults, _ := verificationSummary(artifactDir)
+	completedItems := []string{}
+	if b, err := os.ReadFile(filepath.Join(workspace, "BUILD_STATE.md")); err == nil {
+		completedItems = sectionItems(string(b), "## Completed")
+	}
+	inputDigest, _ := readJSONMap(filepath.Join(artifactDir, "input-digest.json"))
+
+	report := EvaluationResult{
+		TrialID:              cfg.TrialID,
+		GeneratedAt:          time.Now().UTC(),
+		Workspace:            workspace,
+		ArtifactDir:          artifactDir,
+		Outcome:              firstNonEmpty(finalStatus["outcome"], "unknown"),
+		Tool:                 cfg.Tool.Name,
+		Phase:                cfg.Phase,
+		AllowedVariable:      cfg.AllowedVariable,
+		Models:               cfg.Models,
+		CompletedItems:       completedItems,
+		IterationCount:       len(toolResults),
+		ToolDurationMS:       sumCommandDurations(toolResults),
+		RunnerVerifyPasses:   verifyResults.Passes,
+		RunnerVerifyFailures: verifyResults.Failures,
+		EvaluatorCommands:    evalResults,
+		EvaluatorPassed:      allCommandsPassed(evalResults),
+		FinalStatus:          finalStatus,
+		ArtifactFiles:        artifactFiles,
+		WorkspaceStats:       workspaceStats(workspace),
+		PackageScripts:       packageScripts(workspace),
+		Environment:          environmentSummary(),
+		InputDigest:          inputDigest,
+	}
+	if stateErr == nil {
+		report.BuildComplete = state.Complete
+		report.BuildBlocked = state.Blocked
+		report.NextEligible = state.NextEligibleSummary
+	} else {
+		report.Notes = append(report.Notes, "BUILD_STATE.md could not be read: "+stateErr.Error())
+	}
+	if report.Outcome == "unknown" {
+		report.Notes = append(report.Notes, "final-status.txt missing or does not include an outcome")
+	}
+	return report, nil
+}
+
+type verifySummary struct {
+	Passes   int
+	Failures int
+}
+
+func verificationSummary(artifactDir string) (verifySummary, error) {
+	paths, err := filepath.Glob(filepath.Join(artifactDir, "verify-iteration-*-result.json"))
+	if err != nil {
+		return verifySummary{}, err
+	}
+	sort.Strings(paths)
+	var summary verifySummary
+	for _, path := range paths {
+		var results []CommandResult
+		if err := readJSONFile(path, &results); err != nil {
+			continue
+		}
+		for _, result := range results {
+			if result.ExitCode == 0 {
+				summary.Passes++
+			} else {
+				summary.Failures++
+			}
+		}
+	}
+	return summary, nil
+}
+
+func commandResultsFromGlob(pattern string) ([]CommandResult, error) {
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	var results []CommandResult
+	for _, path := range paths {
+		var result CommandResult
+		if err := readJSONFile(path, &result); err == nil {
+			results = append(results, result)
+		}
+	}
+	return results, nil
+}
+
+func sumCommandDurations(results []CommandResult) int64 {
+	var total int64
+	for _, result := range results {
+		total += result.DurationMS
+	}
+	return total
+}
+
+func allCommandsPassed(results []CommandResult) bool {
+	if len(results) == 0 {
+		return false
+	}
+	for _, result := range results {
+		if result.ExitCode != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func artifactFileList(artifactDir string) ([]string, error) {
+	entries, err := os.ReadDir(artifactDir)
+	if err != nil {
+		return nil, err
+	}
+	files := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		files = append(files, entry.Name())
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func workspaceStats(workspace string) map[string]int {
+	stats := map[string]int{
+		"files_total":        0,
+		"source_files":       0,
+		"test_files":         0,
+		"package_json_files": 0,
+	}
+	_ = filepath.WalkDir(workspace, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, relErr := filepath.Rel(workspace, path)
+		if relErr == nil && shouldSkipEvaluationPath(rel, d) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		stats["files_total"]++
+		name := d.Name()
+		ext := filepath.Ext(name)
+		switch ext {
+		case ".ts", ".tsx", ".js", ".jsx":
+			stats["source_files"]++
+		}
+		if strings.Contains(name, ".test.") || strings.Contains(name, ".spec.") {
+			stats["test_files"]++
+		}
+		if name == "package.json" {
+			stats["package_json_files"]++
+		}
+		return nil
+	})
+	return stats
+}
+
+func shouldSkipEvaluationPath(rel string, d os.DirEntry) bool {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	for _, part := range parts {
+		switch part {
+		case ".git", "node_modules", ".next", "dist", "build", ".turbo", "coverage":
+			return true
+		}
+	}
+	return false
+}
+
+func packageScripts(workspace string) map[string][]string {
+	scripts := map[string][]string{}
+	_ = filepath.WalkDir(workspace, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, relErr := filepath.Rel(workspace, path)
+		if relErr == nil && shouldSkipEvaluationPath(rel, d) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() || d.Name() != "package.json" {
+			return nil
+		}
+		var pkg struct {
+			Scripts map[string]string `json:"scripts"`
+		}
+		if err := readJSONFile(path, &pkg); err != nil {
+			return nil
+		}
+		names := make([]string, 0, len(pkg.Scripts))
+		for name := range pkg.Scripts {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		if relErr == nil {
+			scripts[filepath.ToSlash(rel)] = names
+		}
+		return nil
+	})
+	return scripts
+}
+
+func finalReportMarkdown(report EvaluationResult) string {
+	var b strings.Builder
+	b.WriteString("# Experiment Final Report\n\n")
+	b.WriteString(fmt.Sprintf("- Trial ID: `%s`\n", report.TrialID))
+	b.WriteString(fmt.Sprintf("- Outcome: `%s`\n", report.Outcome))
+	b.WriteString(fmt.Sprintf("- Generated: `%s`\n", report.GeneratedAt.Format(time.RFC3339)))
+	b.WriteString(fmt.Sprintf("- Tool: `%s`\n", report.Tool))
+	b.WriteString(fmt.Sprintf("- Phase: `%s`\n", report.Phase))
+	b.WriteString(fmt.Sprintf("- Allowed variable: `%s`\n", report.AllowedVariable))
+	b.WriteString(fmt.Sprintf("- Workspace: `%s`\n", report.Workspace))
+	b.WriteString(fmt.Sprintf("- Artifacts: `%s`\n\n", report.ArtifactDir))
+
+	b.WriteString("## Build State\n\n")
+	b.WriteString(fmt.Sprintf("- Build complete: `%t`\n", report.BuildComplete))
+	b.WriteString(fmt.Sprintf("- Build blocked: `%t`\n", report.BuildBlocked))
+	b.WriteString(fmt.Sprintf("- Next eligible: `%s`\n", report.NextEligible))
+	b.WriteString(fmt.Sprintf("- Completed items: `%d`\n\n", len(report.CompletedItems)))
+
+	b.WriteString("## Verification\n\n")
+	b.WriteString(fmt.Sprintf("- Runner verification command passes: `%d`\n", report.RunnerVerifyPasses))
+	b.WriteString(fmt.Sprintf("- Runner verification command failures: `%d`\n", report.RunnerVerifyFailures))
+	b.WriteString(fmt.Sprintf("- Independent evaluator passed: `%t`\n\n", report.EvaluatorPassed))
+	b.WriteString("| Command | Exit | Duration |\n")
+	b.WriteString("| --- | ---: | ---: |\n")
+	for _, result := range report.EvaluatorCommands {
+		b.WriteString(fmt.Sprintf("| `%s` | `%d` | `%s` |\n", strings.Join(result.Command, " "), result.ExitCode, formatDuration(result.DurationMS)))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("## Iterations And Timing\n\n")
+	b.WriteString(fmt.Sprintf("- Tool iterations: `%d`\n", report.IterationCount))
+	b.WriteString(fmt.Sprintf("- Tool runtime total: `%s`\n\n", formatDuration(report.ToolDurationMS)))
+
+	b.WriteString("## Workspace Inventory\n\n")
+	keys := sortedMapKeysInt(report.WorkspaceStats)
+	for _, key := range keys {
+		b.WriteString(fmt.Sprintf("- %s: `%d`\n", key, report.WorkspaceStats[key]))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("## Package Scripts\n\n")
+	pkgKeys := sortedMapKeysStringSlice(report.PackageScripts)
+	for _, key := range pkgKeys {
+		b.WriteString(fmt.Sprintf("- `%s`: `%s`\n", key, strings.Join(report.PackageScripts[key], "`, `")))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("## Models\n\n")
+	modelKeys := sortedMapKeysString(report.Models)
+	for _, key := range modelKeys {
+		b.WriteString(fmt.Sprintf("- %s: `%s`\n", key, report.Models[key]))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("## Artifact Files\n\n")
+	for _, file := range report.ArtifactFiles {
+		b.WriteString(fmt.Sprintf("- `%s`\n", file))
+	}
+	if len(report.Notes) > 0 {
+		b.WriteString("\n## Notes\n\n")
+		for _, note := range report.Notes {
+			b.WriteString(fmt.Sprintf("- %s\n", note))
+		}
+	}
+	return b.String()
+}
+
+func readKeyValueFile(path string) (map[string]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		out[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	return out, nil
+}
+
+func readJSONMap(path string) (map[string]interface{}, error) {
+	var out map[string]interface{}
+	err := readJSONFile(path, &out)
+	return out, err
+}
+
+func readJSONFile(path string, out any) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, out)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func sortedMapKeysInt(values map[string]int) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedMapKeysString(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedMapKeysStringSlice(values map[string][]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func archive(cfg TrialConfig) error {
@@ -682,6 +1129,11 @@ func trialEnv(cfg TrialConfig, workspace, artifactDir string) (map[string]string
 		"npm_config_cache":             filepath.Join(cacheRoot, "npm"),
 		"PNPM_HOME":                    filepath.Join(cacheRoot, "pnpm-home"),
 		"XDG_CACHE_HOME":               filepath.Join(cacheRoot, "xdg"),
+		"TURBO_TELEMETRY_DISABLED":     "1",
+		"TURBO_NO_UPDATE_NOTIFIER":     "1",
+	}
+	if certFile := hostCertFile(); certFile != "" {
+		env["SSL_CERT_FILE"] = certFile
 	}
 	if cfg.Tool.Name == "codex" {
 		codexHome, err := prepareCodexHome(cacheRoot)
@@ -694,6 +1146,20 @@ func trialEnv(cfg TrialConfig, workspace, artifactDir string) (map[string]string
 		env[k] = v
 	}
 	return env, nil
+}
+
+func hostCertFile() string {
+	for _, path := range []string{
+		"/opt/homebrew/etc/ca-certificates/cert.pem",
+		"/opt/homebrew/etc/openssl@3/cert.pem",
+		"/etc/ssl/cert.pem",
+		"/private/etc/ssl/cert.pem",
+	} {
+		if exists(path) {
+			return path
+		}
+	}
+	return ""
 }
 
 func prepareCodexHome(cacheRoot string) (string, error) {

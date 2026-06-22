@@ -49,6 +49,7 @@ A normal trial has four automated steps:
 ./experiments/runner/salescraft-exp run --config experiments/configs/phase1-codex-gpt.json
 ./experiments/runner/salescraft-exp verify --config experiments/configs/phase1-codex-gpt.json
 ./experiments/runner/salescraft-exp archive --config experiments/configs/phase1-codex-gpt.json
+./experiments/runner/salescraft-exp evaluate --config experiments/configs/phase1-codex-gpt.json
 ```
 
 Or run the full automated lifecycle:
@@ -111,6 +112,13 @@ workspace explicitly:
 
 ```bash
 ./experiments/runner/salescraft-exp clean --config experiments/configs/phase1-codex-gpt.json
+```
+
+If the config has already been bumped to the next run, use `--trial-id` to
+evaluate or re-archive a previous retained workspace without editing the config:
+
+```bash
+./experiments/runner/salescraft-exp evaluate --config experiments/configs/phase1-codex-gpt.json --trial-id phase1-codex-gpt-run13
 ```
 
 The runner streams tool and verification output to the console while also
@@ -203,6 +211,9 @@ experiments/artifacts/{trial_id}/
 |-- verify-log.txt
 |-- verify-result.json
 |-- final-status.txt
+|-- evaluation-log.txt
+|-- evaluation-result.json
+|-- final-report.md
 |-- final-diff.patch
 `-- generated-repo.tar.gz
 ```
@@ -213,6 +224,15 @@ detect. `final-status.txt` is a semantic summary with the trial outcome,
 archive time, build completion/blocker fields, next eligible work, and final
 workspace git status. A clean generated workspace is recorded as
 `workspace_git_status: clean` rather than an empty file.
+
+`evaluate` is the independent post-run evaluator. It does not invoke the model
+under test. It reruns the fixed verification commands, collects runner
+iteration/timing data, summarizes workspace inventory and package scripts, and
+writes:
+
+- `evaluation-log.txt`: raw evaluator command output
+- `evaluation-result.json`: structured data for later scoring/comparison
+- `final-report.md`: human-readable report for the trial
 
 ## Comparing Tools
 
