@@ -19,6 +19,7 @@ experiments/
 |-- README.md
 |-- configs/
 |   |-- phase1-aider-sonnet.json
+|   |-- phase1-claude-code-opus48.json
 |   |-- phase1-claude-code-sonnet.json
 |   |-- phase1-codex-gpt.json
 |   |-- phase1-opencode-sonnet.json

@@ -1,0 +1,58 @@
+{
+  "trial_id": "phase1-claude-code-opus48-run01",
+  "phase": "phase1-toolchain-native-baseline",
+  "allowed_variable": "toolchain",
+  "baseline_ref": "HEAD",
+  "repo_root": ".",
+  "workspace_root": "experiments/trials",
+  "artifact_root": "experiments/artifacts",
+  "cache_policy": "cold",
+  "tool": {
+    "name": "claude-code",
+    "version": "record-with-claude-version-command",
+    "command": "zsh",
+    "args": [
+      "-lc",
+      "claude --print --dangerously-skip-permissions --model global.anthropic.claude-opus-4-8 < PROMPT.md"
+    ],
+    "env": {
+      "CLAUDE_CODE_USE_BEDROCK": "1",
+      "AWS_REGION": "us-west-2",
+      "AWS_DEFAULT_REGION": "us-west-2"
+    }
+  },
+  "models": {
+    "planning": "global.anthropic.claude-opus-4-8",
+    "code": "global.anthropic.claude-opus-4-8",
+    "test": "global.anthropic.claude-opus-4-8",
+    "judge": "openai.gpt-5.5"
+  },
+  "sampling": {
+    "temperature": 0,
+    "top_p": 1,
+    "max_tokens": 8192
+  },
+  "loop": {
+    "strategy": "test-driven",
+    "max_iterations": 60
+  },
+  "context": {
+    "strategy": "artifact-only"
+  },
+  "capabilities": {
+    "profile": "standard-autonomous",
+    "browser": true,
+    "subagents": true,
+    "package_install": true,
+    "skills": "existing-only",
+    "mcp": "existing-only"
+  },
+  "verification": {
+    "commands": [
+      ["pnpm", "typecheck"],
+      ["pnpm", "lint"],
+      ["pnpm", "test"],
+      ["pnpm", "build"]
+    ]
+  }
+}
