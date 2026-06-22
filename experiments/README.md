@@ -244,6 +244,11 @@ browser or workflow failure is recorded as an app quality finding, not confused
 with a harness failure. Browser checks use the generated app's local Next.js
 runtime and Playwright from the trial workspace when available.
 
+For Codex trials, `evaluate` also parses the per-iteration `tokens used`
+summary from tool stderr logs and reports total observed tokens plus an
+iteration breakdown. USD cost still requires a separate provider pricing/rate
+table.
+
 The browser evaluator currently checks:
 
 - core routes required by the committed UI spec

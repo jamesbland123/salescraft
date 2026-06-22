@@ -13,7 +13,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -279,6 +281,7 @@ type EvaluationResult struct {
 	CompletedItems       []string               `json:"completed_items"`
 	IterationCount       int                    `json:"iteration_count"`
 	ToolDurationMS       int64                  `json:"tool_duration_ms"`
+	TokenUsage           TokenUsage             `json:"token_usage"`
 	RunnerVerifyPasses   int                    `json:"runner_verify_passes"`
 	RunnerVerifyFailures int                    `json:"runner_verify_failures"`
 	EvaluatorCommands    []CommandResult        `json:"evaluator_commands"`
@@ -296,6 +299,14 @@ type EvaluationResult struct {
 	Notes                []string               `json:"notes,omitempty"`
 	Environment          map[string]string      `json:"environment"`
 	InputDigest          map[string]interface{} `json:"input_digest,omitempty"`
+}
+
+type TokenUsage struct {
+	Available   bool             `json:"available"`
+	Total       int64            `json:"total"`
+	ByIteration map[string]int64 `json:"by_iteration,omitempty"`
+	Source      string           `json:"source,omitempty"`
+	Notes       []string         `json:"notes,omitempty"`
 }
 
 func verifyIteration(cfg TrialConfig, iteration int) error {
@@ -457,6 +468,7 @@ func buildEvaluationResult(cfg TrialConfig, evalResults []CommandResult, browser
 	dddScore := dddEvaluation(workspace)
 	browserPassed := boolFromMap(browserEval, "passed")
 	verificationPassed := allCommandsPassed(evalResults)
+	tokenUsage := parseTokenUsage(artifactDir)
 
 	report := EvaluationResult{
 		TrialID:              cfg.TrialID,
@@ -471,6 +483,7 @@ func buildEvaluationResult(cfg TrialConfig, evalResults []CommandResult, browser
 		CompletedItems:       completedItems,
 		IterationCount:       len(toolResults),
 		ToolDurationMS:       sumCommandDurations(toolResults),
+		TokenUsage:           tokenUsage,
 		RunnerVerifyPasses:   verifyResults.Passes,
 		RunnerVerifyFailures: verifyResults.Failures,
 		EvaluatorCommands:    evalResults,
@@ -593,6 +606,47 @@ func codeCorpus(workspace string) string {
 	return b.String()
 }
 
+func parseTokenUsage(artifactDir string) TokenUsage {
+	usage := TokenUsage{
+		Available:   false,
+		ByIteration: map[string]int64{},
+		Source:      "codex stderr 'tokens used' summary",
+	}
+	paths, err := filepath.Glob(filepath.Join(artifactDir, "tool-iteration-*-stderr.log"))
+	if err != nil {
+		usage.Notes = append(usage.Notes, "could not glob tool stderr logs: "+err.Error())
+		return usage
+	}
+	sort.Strings(paths)
+	tokenPattern := regexp.MustCompile(`(?m)tokens used\s*\r?\n\s*([0-9][0-9,]*)`)
+	for _, path := range paths {
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			usage.Notes = append(usage.Notes, "could not read "+filepath.Base(path)+": "+readErr.Error())
+			continue
+		}
+		matches := tokenPattern.FindAllStringSubmatch(string(content), -1)
+		if len(matches) == 0 {
+			continue
+		}
+		last := matches[len(matches)-1][1]
+		value, parseErr := strconv.ParseInt(strings.ReplaceAll(last, ",", ""), 10, 64)
+		if parseErr != nil {
+			usage.Notes = append(usage.Notes, "could not parse token count in "+filepath.Base(path)+": "+parseErr.Error())
+			continue
+		}
+		iteration := strings.TrimSuffix(filepath.Base(path), "-stderr.log")
+		iteration = strings.TrimPrefix(iteration, "tool-iteration-")
+		usage.ByIteration[iteration] = value
+		usage.Total += value
+		usage.Available = true
+	}
+	if !usage.Available {
+		usage.Notes = append(usage.Notes, "no Codex token summary lines were found in tool stderr logs")
+	}
+	return usage
+}
+
 func qualityScore(report EvaluationResult) map[string]interface{} {
 	functional := 0.0
 	if report.VerificationPassed {
@@ -643,10 +697,10 @@ func researchAnswers(report EvaluationResult, cfg TrialConfig) map[string]string
 		browserSummary = "browser workflow failed"
 	}
 	return map[string]string{
-		"RQ0":  fmt.Sprintf("This trial provides one point on the model/toolchain frontier: quality score %s with tool %s and models %s. The score should be compared with cost/token data once capture is added.", quality, cfg.Tool.Name, mapSummary(cfg.Models)),
+		"RQ0":  fmt.Sprintf("This trial provides one point on the model/toolchain frontier: quality score %s with tool %s, %s observed tokens, and models %s.", quality, cfg.Tool.Name, formatInt(report.TokenUsage.Total), mapSummary(cfg.Models)),
 		"RQ2":  fmt.Sprintf("Code generation reached %d completed build-plan items in %d iterations with %d runner verification failures; fixed verification passed=%t and %s.", len(report.CompletedItems), report.IterationCount, report.RunnerVerifyFailures, report.VerificationPassed, browserSummary),
 		"RQ4":  fmt.Sprintf("The orchestrator/toolchain under test was %s; it converged in %d iterations and the independent evaluator quality gate passed=%t.", cfg.Tool.Name, report.IterationCount, report.EvaluatorPassed),
-		"RQ8":  "Cost-quality scoring is not complete until token/cost capture is added; this report records quality and time inputs for the Pareto analysis.",
+		"RQ8":  fmt.Sprintf("Cost-quality scoring has observed token usage (%s tokens), but USD cost remains incomplete until provider pricing/rate capture is added.", formatInt(report.TokenUsage.Total)),
 		"RQ9":  fmt.Sprintf("The loop strategy was %v with %d observed model iterations.", cfg.Loop["strategy"], report.IterationCount),
 		"RQ10": fmt.Sprintf("DDD static score is %.0f/100; missing terms and bounded-context evidence are recorded in evaluation-result.json.", floatFromMap(report.DDDScore, "score")),
 	}
@@ -712,6 +766,29 @@ func browserPerformanceScore(browserEval map[string]interface{}) float64 {
 
 func round1(value float64) float64 {
 	return float64(int(value*10+0.5)) / 10
+}
+
+func formatInt(value int64) string {
+	sign := ""
+	if value < 0 {
+		sign = "-"
+		value = -value
+	}
+	raw := strconv.FormatInt(value, 10)
+	if len(raw) <= 3 {
+		return sign + raw
+	}
+	var b strings.Builder
+	remainder := len(raw) % 3
+	if remainder == 0 {
+		remainder = 3
+	}
+	b.WriteString(raw[:remainder])
+	for i := remainder; i < len(raw); i += 3 {
+		b.WriteString(",")
+		b.WriteString(raw[i : i+3])
+	}
+	return sign + b.String()
 }
 
 func mapSummary(values map[string]string) string {
@@ -1016,6 +1093,25 @@ func finalReportMarkdown(report EvaluationResult) string {
 	b.WriteString(fmt.Sprintf("- Tool iterations: `%d`\n", report.IterationCount))
 	b.WriteString(fmt.Sprintf("- Tool runtime total: `%s`\n\n", formatDuration(report.ToolDurationMS)))
 
+	b.WriteString("## Token Usage\n\n")
+	b.WriteString(fmt.Sprintf("- Token usage available: `%t`\n", report.TokenUsage.Available))
+	b.WriteString(fmt.Sprintf("- Total observed tokens: `%s`\n", formatInt(report.TokenUsage.Total)))
+	b.WriteString(fmt.Sprintf("- Source: `%s`\n", report.TokenUsage.Source))
+	if len(report.TokenUsage.ByIteration) > 0 {
+		b.WriteString("\n| Iteration | Tokens |\n")
+		b.WriteString("| ---: | ---: |\n")
+		for _, iteration := range sortedMapKeysInt64(report.TokenUsage.ByIteration) {
+			b.WriteString(fmt.Sprintf("| `%s` | `%s` |\n", iteration, formatInt(report.TokenUsage.ByIteration[iteration])))
+		}
+	}
+	if len(report.TokenUsage.Notes) > 0 {
+		b.WriteString("\n")
+		for _, note := range report.TokenUsage.Notes {
+			b.WriteString(fmt.Sprintf("- %s\n", note))
+		}
+	}
+	b.WriteString("\n")
+
 	b.WriteString("## Workspace Inventory\n\n")
 	keys := sortedMapKeysInt(report.WorkspaceStats)
 	for _, key := range keys {
@@ -1088,7 +1184,9 @@ func judgeBriefMarkdown(report EvaluationResult) string {
 	b.WriteString(fmt.Sprintf("- DDD score: `%0.0f/100`\n", floatFromMap(report.DDDScore, "score")))
 	b.WriteString(fmt.Sprintf("- Completed build-plan items: `%d`\n", len(report.CompletedItems)))
 	b.WriteString(fmt.Sprintf("- Tool iterations: `%d`\n", report.IterationCount))
-	b.WriteString(fmt.Sprintf("- Tool runtime: `%s`\n\n", formatDuration(report.ToolDurationMS)))
+	b.WriteString(fmt.Sprintf("- Tool runtime: `%s`\n", formatDuration(report.ToolDurationMS)))
+	b.WriteString(fmt.Sprintf("- Observed tokens: `%s`\n", formatInt(report.TokenUsage.Total)))
+	b.WriteString(fmt.Sprintf("- Token source: `%s`\n\n", report.TokenUsage.Source))
 
 	b.WriteString("## Critical Findings\n\n")
 	for _, finding := range criticalFindings(report) {
@@ -1205,6 +1303,15 @@ func firstNonEmpty(values ...string) string {
 }
 
 func sortedMapKeysInt(values map[string]int) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedMapKeysInt64(values map[string]int64) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
