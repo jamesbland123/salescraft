@@ -226,13 +226,37 @@ workspace git status. A clean generated workspace is recorded as
 `workspace_git_status: clean` rather than an empty file.
 
 `evaluate` is the independent post-run evaluator. It does not invoke the model
-under test. It reruns the fixed verification commands, collects runner
-iteration/timing data, summarizes workspace inventory and package scripts, and
-writes:
+under test. It reruns the fixed verification commands, launches the generated
+web app for browser route/workflow checks, scores static DDD/domain-language
+fit against the research rubric, collects runner iteration/timing data,
+summarizes workspace inventory and package scripts, and writes:
 
 - `evaluation-log.txt`: raw evaluator command output
 - `evaluation-result.json`: structured data for later scoring/comparison
 - `final-report.md`: human-readable report for the trial
+- `judge-brief.md`: read-only evidence packet for an independent LLM judge
+
+The final report is organized around the research questions from
+`experiments/evaluation/research-rubric.md`, including quality score,
+functional/browser evidence, DDD adherence, completion, timing, and residual
+risk notes. It includes an evaluator verdict and critical findings so a
+browser or workflow failure is recorded as an app quality finding, not confused
+with a harness failure. Browser checks use the generated app's local Next.js
+runtime and Playwright from the trial workspace when available.
+
+The browser evaluator currently checks:
+
+- core routes required by the committed UI spec
+- navigation integrity from the authenticated shell
+- login form basics
+- estimate builder acceptance surface
+- relationship intelligence acceptance surface
+- bid response acceptance surface
+
+`judge-brief.md` is suitable input for Codex or another LLM acting only as an
+outer evaluator. The judge must not modify the trial workspace; it should use
+the brief, `evaluation-result.json`, `browser-evaluation.json`, the committed
+spec, and `final-report.md` to produce additional critique.
 
 ## Comparing Tools
 

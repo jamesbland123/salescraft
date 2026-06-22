@@ -282,7 +282,13 @@ type EvaluationResult struct {
 	RunnerVerifyPasses   int                    `json:"runner_verify_passes"`
 	RunnerVerifyFailures int                    `json:"runner_verify_failures"`
 	EvaluatorCommands    []CommandResult        `json:"evaluator_commands"`
+	VerificationPassed   bool                   `json:"verification_passed"`
 	EvaluatorPassed      bool                   `json:"evaluator_passed"`
+	BrowserEvaluation    map[string]interface{} `json:"browser_evaluation,omitempty"`
+	BrowserPassed        bool                   `json:"browser_passed"`
+	DDDScore             map[string]interface{} `json:"ddd_score"`
+	QualityScore         map[string]interface{} `json:"quality_score"`
+	ResearchAnswers      map[string]string      `json:"research_answers"`
 	FinalStatus          map[string]string      `json:"final_status"`
 	ArtifactFiles        []string               `json:"artifact_files"`
 	WorkspaceStats       map[string]int         `json:"workspace_stats"`
@@ -352,7 +358,8 @@ func evaluate(cfg TrialConfig) error {
 	defer logFile.Close()
 
 	evalResults := runEvaluationCommands(cfg, workspace, artifactDir, logFile)
-	report, err := buildEvaluationResult(cfg, evalResults)
+	browserEval := runBrowserEvaluation(cfg, workspace, artifactDir, logFile)
+	report, err := buildEvaluationResult(cfg, evalResults, browserEval)
 	if err != nil {
 		return err
 	}
@@ -362,9 +369,12 @@ func evaluate(cfg TrialConfig) error {
 	if err := os.WriteFile(filepath.Join(artifactDir, "final-report.md"), []byte(finalReportMarkdown(report)), 0o644); err != nil {
 		return err
 	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "judge-brief.md"), []byte(judgeBriefMarkdown(report)), 0o644); err != nil {
+		return err
+	}
 	statusf("evaluate: wrote %s", filepath.Join(artifactDir, "final-report.md"))
 	if !report.EvaluatorPassed {
-		return fmt.Errorf("evaluation failed; see %s", logPath)
+		return fmt.Errorf("independent evaluation quality gate failed; see %s and %s", filepath.Join(artifactDir, "final-report.md"), logPath)
 	}
 	return nil
 }
@@ -396,7 +406,42 @@ func runEvaluationCommands(cfg TrialConfig, workspace, artifactDir string, logFi
 	return results
 }
 
-func buildEvaluationResult(cfg TrialConfig, evalResults []CommandResult) (EvaluationResult, error) {
+func runBrowserEvaluation(cfg TrialConfig, workspace, artifactDir string, logFile io.Writer) map[string]interface{} {
+	scriptPath := filepath.Join(cfg.RepoRoot, "experiments", "scripts", "evaluate-app-ui.mjs")
+	result := map[string]interface{}{
+		"passed": false,
+		"notes":  []string{},
+	}
+	if !exists(scriptPath) {
+		result["failures"] = []string{"browser evaluator script is missing: " + scriptPath}
+		return result
+	}
+	statusf("evaluate: running browser workflow evaluator")
+	_, _ = fmt.Fprintf(logFile, "\n$ node %s %s\n", scriptPath, workspace)
+	env, err := trialEnv(cfg, workspace, artifactDir)
+	if err != nil {
+		result["failures"] = []string{err.Error()}
+		return result
+	}
+	cmd := exec.Command("node", scriptPath, workspace)
+	cmd.Dir = workspace
+	cmd.Env = mergedEnv(env)
+	out, err := cmd.CombinedOutput()
+	_, _ = logFile.Write(out)
+	if err != nil {
+		result["command_error"] = err.Error()
+	}
+	if len(out) > 0 {
+		if parseErr := json.Unmarshal(out, &result); parseErr != nil {
+			result["parse_error"] = parseErr.Error()
+			result["raw_output"] = string(out)
+		}
+	}
+	_ = writeJSON(filepath.Join(artifactDir, "browser-evaluation.json"), result)
+	return result
+}
+
+func buildEvaluationResult(cfg TrialConfig, evalResults []CommandResult, browserEval map[string]interface{}) (EvaluationResult, error) {
 	workspace := workspacePath(cfg)
 	artifactDir := artifactPath(cfg)
 	state, stateErr := readBuildState(workspace)
@@ -409,6 +454,9 @@ func buildEvaluationResult(cfg TrialConfig, evalResults []CommandResult) (Evalua
 		completedItems = sectionItems(string(b), "## Completed")
 	}
 	inputDigest, _ := readJSONMap(filepath.Join(artifactDir, "input-digest.json"))
+	dddScore := dddEvaluation(workspace)
+	browserPassed := boolFromMap(browserEval, "passed")
+	verificationPassed := allCommandsPassed(evalResults)
 
 	report := EvaluationResult{
 		TrialID:              cfg.TrialID,
@@ -426,7 +474,11 @@ func buildEvaluationResult(cfg TrialConfig, evalResults []CommandResult) (Evalua
 		RunnerVerifyPasses:   verifyResults.Passes,
 		RunnerVerifyFailures: verifyResults.Failures,
 		EvaluatorCommands:    evalResults,
-		EvaluatorPassed:      allCommandsPassed(evalResults),
+		VerificationPassed:   verificationPassed,
+		EvaluatorPassed:      verificationPassed && browserPassed,
+		BrowserEvaluation:    browserEval,
+		BrowserPassed:        browserPassed,
+		DDDScore:             dddScore,
 		FinalStatus:          finalStatus,
 		ArtifactFiles:        artifactFiles,
 		WorkspaceStats:       workspaceStats(workspace),
@@ -434,6 +486,8 @@ func buildEvaluationResult(cfg TrialConfig, evalResults []CommandResult) (Evalua
 		Environment:          environmentSummary(),
 		InputDigest:          inputDigest,
 	}
+	report.QualityScore = qualityScore(report)
+	report.ResearchAnswers = researchAnswers(report, cfg)
 	if stateErr == nil {
 		report.BuildComplete = state.Complete
 		report.BuildBlocked = state.Blocked
@@ -445,6 +499,246 @@ func buildEvaluationResult(cfg TrialConfig, evalResults []CommandResult) (Evalua
 		report.Notes = append(report.Notes, "final-status.txt missing or does not include an outcome")
 	}
 	return report, nil
+}
+
+func dddEvaluation(workspace string) map[string]interface{} {
+	requiredTerms := []string{
+		"specification",
+		"takeoff",
+		"wear layer",
+		"seaming",
+		"transition strip",
+		"punch list",
+		"general contractor",
+		"architect of record",
+		"material safety data sheet",
+		"msds",
+		"lead time",
+		"floor prep",
+		"attic stock",
+	}
+	boundedContexts := []string{
+		"sales",
+		"product",
+		"project",
+		"marketing",
+		"recommendation",
+		"intelligence",
+	}
+	genericTerms := []string{"todo app", "users table", "items controller", "generic crud"}
+	text := strings.ToLower(codeCorpus(workspace))
+	presentTerms := []string{}
+	missingTerms := []string{}
+	for _, term := range requiredTerms {
+		if strings.Contains(text, term) {
+			presentTerms = append(presentTerms, term)
+		} else {
+			missingTerms = append(missingTerms, term)
+		}
+	}
+	presentContexts := []string{}
+	for _, context := range boundedContexts {
+		if strings.Contains(text, context) {
+			presentContexts = append(presentContexts, context)
+		}
+	}
+	genericHits := []string{}
+	for _, term := range genericTerms {
+		if strings.Contains(text, term) {
+			genericHits = append(genericHits, term)
+		}
+	}
+	termRatio := float64(len(presentTerms)) / float64(len(requiredTerms))
+	contextRatio := float64(len(presentContexts)) / float64(len(boundedContexts))
+	score := int((termRatio*0.6 + contextRatio*0.4) * 100)
+	score -= len(genericHits) * 5
+	if score < 0 {
+		score = 0
+	}
+	return map[string]interface{}{
+		"score":            score,
+		"present_terms":    presentTerms,
+		"missing_terms":    missingTerms,
+		"present_contexts": presentContexts,
+		"generic_hits":     genericHits,
+	}
+}
+
+func codeCorpus(workspace string) string {
+	var b strings.Builder
+	_ = filepath.WalkDir(workspace, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, relErr := filepath.Rel(workspace, path)
+		if relErr == nil && shouldSkipEvaluationPath(rel, d) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		switch filepath.Ext(d.Name()) {
+		case ".ts", ".tsx", ".js", ".jsx", ".md", ".json", ".sql", ".prisma":
+			content, readErr := os.ReadFile(path)
+			if readErr == nil {
+				b.Write(content)
+				b.WriteString("\n")
+			}
+		}
+		return nil
+	})
+	return b.String()
+}
+
+func qualityScore(report EvaluationResult) map[string]interface{} {
+	functional := 0.0
+	if report.VerificationPassed {
+		functional += 22
+	}
+	if report.BrowserPassed {
+		functional += 13
+	}
+	ddd := floatFromMap(report.DDDScore, "score") * 0.20
+	codeQuality := 0.0
+	if report.RunnerVerifyFailures == 0 && report.VerificationPassed {
+		codeQuality = 15
+	}
+	completeness := float64(len(report.CompletedItems)) / 47.0 * 15.0
+	if completeness > 15 {
+		completeness = 15
+	}
+	security := 3.0
+	documentation := 3.0
+	if exists(filepath.Join(report.Workspace, "README.md")) {
+		documentation = 4.0
+	}
+	performance := browserPerformanceScore(report.BrowserEvaluation)
+	total := functional + ddd + codeQuality + completeness + security + documentation + performance
+	if total > 100 {
+		total = 100
+	}
+	return map[string]interface{}{
+		"total":                  round1(total),
+		"functional_correctness": round1(functional),
+		"ddd_adherence":          round1(ddd),
+		"code_quality":           round1(codeQuality),
+		"completeness":           round1(completeness),
+		"security":               round1(security),
+		"documentation":          round1(documentation),
+		"performance":            round1(performance),
+		"notes": []string{
+			"Security score is provisional until CodeQL/Semgrep are added.",
+			"Documentation score is provisional until LLM judge review is added.",
+		},
+	}
+}
+
+func researchAnswers(report EvaluationResult, cfg TrialConfig) map[string]string {
+	quality := fmt.Sprintf("%.1f", floatFromMap(report.QualityScore, "total"))
+	browserSummary := "browser workflow passed"
+	if !report.BrowserPassed {
+		browserSummary = "browser workflow failed"
+	}
+	return map[string]string{
+		"RQ0":  fmt.Sprintf("This trial provides one point on the model/toolchain frontier: quality score %s with tool %s and models %s. The score should be compared with cost/token data once capture is added.", quality, cfg.Tool.Name, mapSummary(cfg.Models)),
+		"RQ2":  fmt.Sprintf("Code generation reached %d completed build-plan items in %d iterations with %d runner verification failures; fixed verification passed=%t and %s.", len(report.CompletedItems), report.IterationCount, report.RunnerVerifyFailures, report.VerificationPassed, browserSummary),
+		"RQ4":  fmt.Sprintf("The orchestrator/toolchain under test was %s; it converged in %d iterations and the independent evaluator quality gate passed=%t.", cfg.Tool.Name, report.IterationCount, report.EvaluatorPassed),
+		"RQ8":  "Cost-quality scoring is not complete until token/cost capture is added; this report records quality and time inputs for the Pareto analysis.",
+		"RQ9":  fmt.Sprintf("The loop strategy was %v with %d observed model iterations.", cfg.Loop["strategy"], report.IterationCount),
+		"RQ10": fmt.Sprintf("DDD static score is %.0f/100; missing terms and bounded-context evidence are recorded in evaluation-result.json.", floatFromMap(report.DDDScore, "score")),
+	}
+}
+
+func boolFromMap(values map[string]interface{}, key string) bool {
+	raw, ok := values[key]
+	if !ok {
+		return false
+	}
+	value, ok := raw.(bool)
+	return ok && value
+}
+
+func floatFromMap(values map[string]interface{}, key string) float64 {
+	raw, ok := values[key]
+	if !ok {
+		return 0
+	}
+	switch value := raw.(type) {
+	case float64:
+		return value
+	case int:
+		return float64(value)
+	case json.Number:
+		f, _ := value.Float64()
+		return f
+	default:
+		return 0
+	}
+}
+
+func browserPerformanceScore(browserEval map[string]interface{}) float64 {
+	pages, ok := browserEval["pages"].([]interface{})
+	if !ok || len(pages) == 0 {
+		return 0
+	}
+	var total float64
+	var count float64
+	for _, raw := range pages {
+		page, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		total += floatFromMap(page, "duration_ms")
+		count++
+	}
+	if count == 0 {
+		return 0
+	}
+	avg := total / count
+	switch {
+	case avg <= 1000:
+		return 5
+	case avg <= 2000:
+		return 4
+	case avg <= 4000:
+		return 3
+	default:
+		return 2
+	}
+}
+
+func round1(value float64) float64 {
+	return float64(int(value*10+0.5)) / 10
+}
+
+func mapSummary(values map[string]string) string {
+	parts := []string{}
+	for _, key := range sortedMapKeysString(values) {
+		parts = append(parts, key+"="+values[key])
+	}
+	return strings.Join(parts, ", ")
+}
+
+func stringSliceFromMap(values map[string]interface{}, key string) []string {
+	raw, ok := values[key]
+	if !ok {
+		return []string{}
+	}
+	switch items := raw.(type) {
+	case []string:
+		return items
+	case []interface{}:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			out = append(out, fmt.Sprint(item))
+		}
+		return out
+	default:
+		return []string{}
+	}
 }
 
 type verifySummary struct {
@@ -624,6 +918,35 @@ func finalReportMarkdown(report EvaluationResult) string {
 	b.WriteString(fmt.Sprintf("- Workspace: `%s`\n", report.Workspace))
 	b.WriteString(fmt.Sprintf("- Artifacts: `%s`\n\n", report.ArtifactDir))
 
+	b.WriteString("## Evaluator Verdict\n\n")
+	b.WriteString(fmt.Sprintf("- Quality gate passed: `%t`\n", report.EvaluatorPassed))
+	b.WriteString(fmt.Sprintf("- Fixed verification passed: `%t`\n", report.VerificationPassed))
+	b.WriteString(fmt.Sprintf("- Browser/workflow checks passed: `%t`\n", report.BrowserPassed))
+	b.WriteString(fmt.Sprintf("- Quality score: `%0.1f/100`\n", floatFromMap(report.QualityScore, "total")))
+	b.WriteString(fmt.Sprintf("- DDD score: `%0.0f/100`\n\n", floatFromMap(report.DDDScore, "score")))
+
+	findings := criticalFindings(report)
+	if len(findings) > 0 {
+		b.WriteString("## Critical Findings\n\n")
+		for _, finding := range findings {
+			b.WriteString(fmt.Sprintf("- %s\n", finding))
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("## Research Question Summary\n\n")
+	for _, key := range sortedMapKeysString(report.ResearchAnswers) {
+		b.WriteString(fmt.Sprintf("- **%s:** %s\n", key, report.ResearchAnswers[key]))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("## Quality Score\n\n")
+	b.WriteString(fmt.Sprintf("- Total: `%0.1f/100`\n", floatFromMap(report.QualityScore, "total")))
+	for _, key := range []string{"functional_correctness", "ddd_adherence", "code_quality", "completeness", "security", "documentation", "performance"} {
+		b.WriteString(fmt.Sprintf("- %s: `%0.1f`\n", strings.ReplaceAll(key, "_", " "), floatFromMap(report.QualityScore, key)))
+	}
+	b.WriteString("\n")
+
 	b.WriteString("## Build State\n\n")
 	b.WriteString(fmt.Sprintf("- Build complete: `%t`\n", report.BuildComplete))
 	b.WriteString(fmt.Sprintf("- Build blocked: `%t`\n", report.BuildBlocked))
@@ -633,6 +956,7 @@ func finalReportMarkdown(report EvaluationResult) string {
 	b.WriteString("## Verification\n\n")
 	b.WriteString(fmt.Sprintf("- Runner verification command passes: `%d`\n", report.RunnerVerifyPasses))
 	b.WriteString(fmt.Sprintf("- Runner verification command failures: `%d`\n", report.RunnerVerifyFailures))
+	b.WriteString(fmt.Sprintf("- Fixed verification commands passed: `%t`\n", report.VerificationPassed))
 	b.WriteString(fmt.Sprintf("- Independent evaluator passed: `%t`\n\n", report.EvaluatorPassed))
 	b.WriteString("| Command | Exit | Duration |\n")
 	b.WriteString("| --- | ---: | ---: |\n")
@@ -640,6 +964,53 @@ func finalReportMarkdown(report EvaluationResult) string {
 		b.WriteString(fmt.Sprintf("| `%s` | `%d` | `%s` |\n", strings.Join(result.Command, " "), result.ExitCode, formatDuration(result.DurationMS)))
 	}
 	b.WriteString("\n")
+
+	b.WriteString("## Browser Functionality\n\n")
+	b.WriteString(fmt.Sprintf("- Browser workflow passed: `%t`\n", report.BrowserPassed))
+	if pages, ok := report.BrowserEvaluation["pages"].([]interface{}); ok {
+		b.WriteString("\n| Route | Status | Duration | Result |\n")
+		b.WriteString("| --- | ---: | ---: | --- |\n")
+		for _, raw := range pages {
+			page, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			route := fmt.Sprint(page["path"])
+			status := int(floatFromMap(page, "status"))
+			duration := formatDuration(int64(floatFromMap(page, "duration_ms")))
+			result := "pass"
+			if errors, ok := page["errors"].([]interface{}); ok && len(errors) > 0 {
+				result = "fail"
+			}
+			b.WriteString(fmt.Sprintf("| `%s` | `%d` | `%s` | `%s` |\n", route, status, duration, result))
+		}
+	}
+	if workflows, ok := report.BrowserEvaluation["workflows"].([]interface{}); ok {
+		b.WriteString("\n| Workflow | Duration | Result | Failed Assertions |\n")
+		b.WriteString("| --- | ---: | --- | --- |\n")
+		for _, raw := range workflows {
+			workflow, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			name := fmt.Sprint(workflow["name"])
+			duration := formatDuration(int64(floatFromMap(workflow, "duration_ms")))
+			passed := boolFromMap(workflow, "passed")
+			result := "pass"
+			if !passed {
+				result = "fail"
+			}
+			failures := stringSliceFromMap(workflow, "errors")
+			b.WriteString(fmt.Sprintf("| `%s` | `%s` | `%s` | `%s` |\n", name, duration, result, strings.Join(failures, "; ")))
+		}
+	}
+	b.WriteString("\n")
+
+	b.WriteString("## Domain-Driven Design\n\n")
+	b.WriteString(fmt.Sprintf("- Static DDD score: `%0.0f/100`\n", floatFromMap(report.DDDScore, "score")))
+	b.WriteString(fmt.Sprintf("- Present domain terms: `%s`\n", strings.Join(stringSliceFromMap(report.DDDScore, "present_terms"), "`, `")))
+	b.WriteString(fmt.Sprintf("- Missing domain terms: `%s`\n", strings.Join(stringSliceFromMap(report.DDDScore, "missing_terms"), "`, `")))
+	b.WriteString(fmt.Sprintf("- Present bounded-context signals: `%s`\n\n", strings.Join(stringSliceFromMap(report.DDDScore, "present_contexts"), "`, `")))
 
 	b.WriteString("## Iterations And Timing\n\n")
 	b.WriteString(fmt.Sprintf("- Tool iterations: `%d`\n", report.IterationCount))
@@ -666,6 +1037,15 @@ func finalReportMarkdown(report EvaluationResult) string {
 	}
 	b.WriteString("\n")
 
+	risks := residualRisks(report)
+	if len(risks) > 0 {
+		b.WriteString("## Residual Risks\n\n")
+		for _, risk := range risks {
+			b.WriteString(fmt.Sprintf("- %s\n", risk))
+		}
+		b.WriteString("\n")
+	}
+
 	b.WriteString("## Artifact Files\n\n")
 	for _, file := range report.ArtifactFiles {
 		b.WriteString(fmt.Sprintf("- `%s`\n", file))
@@ -677,6 +1057,112 @@ func finalReportMarkdown(report EvaluationResult) string {
 		}
 	}
 	return b.String()
+}
+
+func judgeBriefMarkdown(report EvaluationResult) string {
+	var b strings.Builder
+	b.WriteString("# Independent Judge Brief\n\n")
+	b.WriteString("You are an independent evaluator for an autonomous SDLC experiment. Do not modify the generated application or experiment artifacts. Review the evidence below and write a concise critique of whether this trial satisfies the research goals, especially build quality, functional correctness, DDD discipline, and model/toolchain comparison value.\n\n")
+	b.WriteString("## Trial\n\n")
+	b.WriteString(fmt.Sprintf("- Trial ID: `%s`\n", report.TrialID))
+	b.WriteString(fmt.Sprintf("- Tool: `%s`\n", report.Tool))
+	b.WriteString(fmt.Sprintf("- Phase: `%s`\n", report.Phase))
+	b.WriteString(fmt.Sprintf("- Allowed variable: `%s`\n", report.AllowedVariable))
+	b.WriteString(fmt.Sprintf("- Workspace: `%s`\n", report.Workspace))
+	b.WriteString(fmt.Sprintf("- Artifacts: `%s`\n\n", report.ArtifactDir))
+
+	b.WriteString("## Rubric\n\n")
+	b.WriteString("- Functional correctness: 35\n")
+	b.WriteString("- DDD adherence: 20\n")
+	b.WriteString("- Code quality: 15\n")
+	b.WriteString("- Completeness: 15\n")
+	b.WriteString("- Security: 5\n")
+	b.WriteString("- Documentation: 5\n")
+	b.WriteString("- Performance: 5\n\n")
+
+	b.WriteString("## Automated Evidence\n\n")
+	b.WriteString(fmt.Sprintf("- Quality gate passed: `%t`\n", report.EvaluatorPassed))
+	b.WriteString(fmt.Sprintf("- Quality score: `%0.1f/100`\n", floatFromMap(report.QualityScore, "total")))
+	b.WriteString(fmt.Sprintf("- Fixed verification passed: `%t`\n", report.VerificationPassed))
+	b.WriteString(fmt.Sprintf("- Browser/workflow checks passed: `%t`\n", report.BrowserPassed))
+	b.WriteString(fmt.Sprintf("- DDD score: `%0.0f/100`\n", floatFromMap(report.DDDScore, "score")))
+	b.WriteString(fmt.Sprintf("- Completed build-plan items: `%d`\n", len(report.CompletedItems)))
+	b.WriteString(fmt.Sprintf("- Tool iterations: `%d`\n", report.IterationCount))
+	b.WriteString(fmt.Sprintf("- Tool runtime: `%s`\n\n", formatDuration(report.ToolDurationMS)))
+
+	b.WriteString("## Critical Findings\n\n")
+	for _, finding := range criticalFindings(report) {
+		b.WriteString(fmt.Sprintf("- %s\n", finding))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("## Required Judge Output\n\n")
+	b.WriteString("- Verdict: pass, marginal, or fail for research-quality acceptance.\n")
+	b.WriteString("- Top functional defects and why they matter.\n")
+	b.WriteString("- DDD/domain-language critique.\n")
+	b.WriteString("- Implications for RQ0, RQ2, RQ4, RQ8, RQ9, and RQ10.\n")
+	b.WriteString("- Data gaps that must be closed before comparing this trial against other tools/models.\n")
+	return b.String()
+}
+
+func criticalFindings(report EvaluationResult) []string {
+	findings := []string{}
+	if !report.VerificationPassed {
+		findings = append(findings, "Fixed verification failed. Treat this as a build correctness failure, not a comparable successful trial.")
+	}
+	if !report.BrowserPassed {
+		failures := failedBrowserRoutes(report.BrowserEvaluation)
+		if len(failures) > 0 {
+			findings = append(findings, fmt.Sprintf("The generated web app launches, but browser evaluation found broken or incomplete user-facing routes: %s.", strings.Join(failures, ", ")))
+		} else {
+			findings = append(findings, "The generated web app launches, but one or more browser workflow checks failed.")
+		}
+	}
+	missingTerms := stringSliceFromMap(report.DDDScore, "missing_terms")
+	if len(missingTerms) > 0 {
+		findings = append(findings, fmt.Sprintf("DDD discipline is incomplete; missing required commercial flooring language: %s.", strings.Join(missingTerms, ", ")))
+	}
+	if report.BuildComplete && report.VerificationPassed && !report.BrowserPassed {
+		findings = append(findings, "The build self-reported as complete and passed static verification, but independent browser testing found acceptance-surface defects. This is important evidence for RQ2, RQ4, and RQ10.")
+	}
+	if len(findings) == 0 {
+		findings = append(findings, "No critical evaluator findings were detected by the current automated checks.")
+	}
+	return findings
+}
+
+func residualRisks(report EvaluationResult) []string {
+	risks := []string{
+		"Security scoring is provisional until static security analysis and dependency vulnerability checks are added.",
+		"Cost-quality comparison is incomplete until token and provider cost capture are added.",
+		"Static DDD scoring detects terminology and context signals, but it does not prove aggregate boundaries or domain event correctness.",
+	}
+	if report.BrowserPassed {
+		risks = append(risks, "Browser checks cover critical routes and acceptance surfaces, but they are not yet full end-to-end data mutation tests.")
+	} else {
+		risks = append(risks, "Browser failures should be treated as app quality findings for this trial unless the evaluator route list is inconsistent with the committed spec.")
+	}
+	return risks
+}
+
+func failedBrowserRoutes(browserEval map[string]interface{}) []string {
+	pages, ok := browserEval["pages"].([]interface{})
+	if !ok {
+		return []string{}
+	}
+	failures := []string{}
+	for _, raw := range pages {
+		page, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		errors := stringSliceFromMap(page, "errors")
+		if len(errors) == 0 {
+			continue
+		}
+		failures = append(failures, fmt.Sprintf("%s (%s)", fmt.Sprint(page["path"]), strings.Join(errors, "; ")))
+	}
+	return failures
 }
 
 func readKeyValueFile(path string) (map[string]string, error) {
