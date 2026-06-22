@@ -192,18 +192,18 @@ try {
     result.pages.push(pageResult);
   }
 
-  async function runWorkflow(name, path, check) {
+  async function runWorkflow(name, routePath, check) {
     const started = Date.now();
     const workflow = {
       name,
-      path,
+      path: routePath,
       duration_ms: 0,
       passed: false,
       assertions: [],
       errors: [],
     };
     try {
-      await page.goto(`http://127.0.0.1:${port}${path}`, {
+      await page.goto(`http://127.0.0.1:${port}${routePath}`, {
         waitUntil: "networkidle",
         timeout: 15000,
       });

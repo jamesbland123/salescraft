@@ -235,6 +235,9 @@ summarizes workspace inventory and package scripts, and writes:
 - `evaluation-result.json`: structured data for later scoring/comparison
 - `final-report.md`: human-readable report for the trial
 - `judge-brief.md`: read-only evidence packet for an independent LLM judge
+- `judge-prompt.md`: exact prompt sent to the judge
+- `judge-report.md`: independent LLM judge critique
+- `judge-result.json`: structured judge command/verdict metadata
 
 The final report is organized around the research questions from
 `experiments/evaluation/research-rubric.md`, including quality score,
@@ -263,14 +266,15 @@ The browser evaluator currently checks:
 These browser checks are acceptance-surface checks, not exhaustive manual QA.
 The current quality score is deterministic and provisional: fixed verification,
 browser checks, static DDD/domain-language scanning, completion count, and
-basic heuristic scores for security, documentation, and performance. A separate
-LLM judge critique should be added before treating the quality score as a full
-human-level review.
+basic heuristic scores for security, documentation, and performance.
 
-`judge-brief.md` is suitable input for Codex or another LLM acting only as an
-outer evaluator. The judge must not modify the trial workspace; it should use
-the brief, `evaluation-result.json`, `browser-evaluation.json`, the committed
-spec, and `final-report.md` to produce additional critique.
+The LLM judge step is a separate read-only Codex invocation using the
+`models.judge` value from the trial config. For Codex-based judging this should
+be an OpenAI model ID, for example `openai.gpt-5.5`. The judge receives the
+brief, deterministic report, browser JSON, and rubric as prompt evidence and
+must return a first-line verdict of `pass`, `marginal`, or `fail`. The runner
+does not allow this judge to repair the generated app; it only captures the
+critique and folds the verdict into the final report.
 
 ## Comparing Tools
 

@@ -292,6 +292,7 @@ type EvaluationResult struct {
 	DDDScore             map[string]interface{} `json:"ddd_score"`
 	QualityScore         map[string]interface{} `json:"quality_score"`
 	ResearchAnswers      map[string]string      `json:"research_answers"`
+	JudgeReview          JudgeReview            `json:"judge_review"`
 	FinalStatus          map[string]string      `json:"final_status"`
 	ArtifactFiles        []string               `json:"artifact_files"`
 	WorkspaceStats       map[string]int         `json:"workspace_stats"`
@@ -299,6 +300,26 @@ type EvaluationResult struct {
 	Notes                []string               `json:"notes,omitempty"`
 	Environment          map[string]string      `json:"environment"`
 	InputDigest          map[string]interface{} `json:"input_digest,omitempty"`
+}
+
+type JudgeReview struct {
+	Available  bool       `json:"available"`
+	Ran        bool       `json:"ran"`
+	Passed     bool       `json:"passed"`
+	Verdict    string     `json:"verdict,omitempty"`
+	Model      string     `json:"model,omitempty"`
+	Command    []string   `json:"command,omitempty"`
+	StartedAt  time.Time  `json:"started_at,omitempty"`
+	FinishedAt time.Time  `json:"finished_at,omitempty"`
+	DurationMS int64      `json:"duration_ms,omitempty"`
+	ExitCode   int        `json:"exit_code,omitempty"`
+	Error      string     `json:"error,omitempty"`
+	PromptPath string     `json:"prompt_path,omitempty"`
+	ReportPath string     `json:"report_path,omitempty"`
+	StdoutPath string     `json:"stdout_path,omitempty"`
+	StderrPath string     `json:"stderr_path,omitempty"`
+	TokenUsage TokenUsage `json:"token_usage,omitempty"`
+	Notes      []string   `json:"notes,omitempty"`
 }
 
 type TokenUsage struct {
@@ -374,6 +395,15 @@ func evaluate(cfg TrialConfig) error {
 	if err != nil {
 		return err
 	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "final-report.md"), []byte(finalReportMarkdown(report)), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "judge-brief.md"), []byte(judgeBriefMarkdown(report)), 0o644); err != nil {
+		return err
+	}
+	report.JudgeReview = runJudgeEvaluation(cfg, report, logFile)
+	report.EvaluatorPassed = report.EvaluatorPassed && report.JudgeReview.Passed
+	report.ResearchAnswers = researchAnswers(report, cfg)
 	if err := writeJSON(filepath.Join(artifactDir, "evaluation-result.json"), report); err != nil {
 		return err
 	}
@@ -450,6 +480,172 @@ func runBrowserEvaluation(cfg TrialConfig, workspace, artifactDir string, logFil
 	}
 	_ = writeJSON(filepath.Join(artifactDir, "browser-evaluation.json"), result)
 	return result
+}
+
+func runJudgeEvaluation(cfg TrialConfig, report EvaluationResult, logFile io.Writer) JudgeReview {
+	artifactDir := report.ArtifactDir
+	model := strings.TrimSpace(cfg.Models["judge"])
+	review := JudgeReview{
+		Available:  false,
+		Ran:        false,
+		Passed:     false,
+		Model:      model,
+		PromptPath: filepath.Join(artifactDir, "judge-prompt.md"),
+		ReportPath: filepath.Join(artifactDir, "judge-report.md"),
+		StdoutPath: filepath.Join(artifactDir, "judge-stdout.log"),
+		StderrPath: filepath.Join(artifactDir, "judge-stderr.log"),
+	}
+	if model == "" {
+		review.Notes = append(review.Notes, "models.judge is not configured")
+		return review
+	}
+	if !strings.HasPrefix(model, "openai.") {
+		review.Notes = append(review.Notes, "Codex judge execution is only enabled for OpenAI model IDs; configured judge model is "+model)
+		return review
+	}
+	if _, err := exec.LookPath("codex"); err != nil {
+		review.Notes = append(review.Notes, "codex executable not found: "+err.Error())
+		return review
+	}
+
+	prompt := judgePrompt(report)
+	if err := os.WriteFile(review.PromptPath, []byte(prompt), 0o644); err != nil {
+		review.Error = "write judge prompt: " + err.Error()
+		return review
+	}
+
+	args := []string{
+		"exec",
+		"--disable",
+		"tui_app_server",
+		"-c",
+		"model_provider=\"amazon-bedrock\"",
+		"-c",
+		"shell_environment_policy.inherit=\"all\"",
+		"--model",
+		model,
+	}
+	review.Available = true
+	review.Ran = true
+	review.Command = append([]string{"codex"}, args...)
+	review.StartedAt = time.Now().UTC()
+	statusf("evaluate: running LLM judge model=%s", model)
+	_, _ = fmt.Fprintf(logFile, "\n$ codex %s < %s\n", strings.Join(args, " "), review.PromptPath)
+
+	stdoutFile, stdoutErr := os.Create(review.StdoutPath)
+	if stdoutErr != nil {
+		review.Error = "create judge stdout log: " + stdoutErr.Error()
+		return review
+	}
+	defer stdoutFile.Close()
+	stderrFile, stderrErr := os.Create(review.StderrPath)
+	if stderrErr != nil {
+		review.Error = "create judge stderr log: " + stderrErr.Error()
+		return review
+	}
+	defer stderrFile.Close()
+
+	cmd := exec.Command("codex", args...)
+	cmd.Dir = artifactDir
+	env, envErr := trialEnv(cfg, report.Workspace, artifactDir)
+	if envErr != nil {
+		review.Error = envErr.Error()
+		return review
+	}
+	cmd.Env = mergedEnv(env)
+	cmd.Stdin = strings.NewReader(prompt)
+	var stdoutBuf strings.Builder
+	var stderrBuf strings.Builder
+	cmd.Stdout = io.MultiWriter(stdoutFile, &stdoutBuf)
+	cmd.Stderr = io.MultiWriter(stderrFile, &stderrBuf, logFile)
+	err := cmd.Run()
+	review.FinishedAt = time.Now().UTC()
+	review.DurationMS = review.FinishedAt.Sub(review.StartedAt).Milliseconds()
+	if cmd.ProcessState != nil {
+		review.ExitCode = cmd.ProcessState.ExitCode()
+	} else if err != nil {
+		review.ExitCode = -1
+	}
+	if err != nil {
+		review.Error = err.Error()
+	}
+
+	judgeOutput := strings.TrimSpace(stdoutBuf.String())
+	if judgeOutput == "" {
+		review.Notes = append(review.Notes, "judge produced no stdout")
+	} else if writeErr := os.WriteFile(review.ReportPath, []byte(judgeOutput+"\n"), 0o644); writeErr != nil {
+		review.Notes = append(review.Notes, "could not write judge report: "+writeErr.Error())
+	}
+	review.Verdict = parseJudgeVerdict(judgeOutput)
+	review.Passed = review.ExitCode == 0 && review.Verdict == "pass"
+	review.TokenUsage = tokenUsageFromText(stderrBuf.String(), "codex judge stderr 'tokens used' summary")
+	if review.Verdict == "" {
+		review.Notes = append(review.Notes, "judge report did not include a parseable first-line verdict")
+	}
+	_ = writeJSON(filepath.Join(artifactDir, "judge-result.json"), review)
+	return review
+}
+
+func judgePrompt(report EvaluationResult) string {
+	var b strings.Builder
+	b.WriteString("You are the independent LLM judge for a Salescraft autonomous SDLC experiment.\n")
+	b.WriteString("This is a read-only evaluation step. Do not modify files. Do not run commands. Use only the evidence pasted below.\n\n")
+	b.WriteString("Your first line must be exactly one of:\n")
+	b.WriteString("Verdict: pass\nVerdict: marginal\nVerdict: fail\n\n")
+	b.WriteString("Use `pass` only if the generated app satisfies the research-quality acceptance bar. Use `marginal` when it is useful but incomplete. Use `fail` when critical acceptance surfaces are missing or the evidence is insufficient.\n\n")
+	b.WriteString("After the verdict, include concise sections:\n")
+	b.WriteString("- Functional correctness\n- DDD/domain critique\n- Code and test quality\n- Research implications for RQ0, RQ2, RQ4, RQ8, RQ9, and RQ10\n- Data gaps\n\n")
+	b.WriteString("## Judge Brief\n\n")
+	b.WriteString(judgeBriefMarkdown(report))
+	b.WriteString("\n\n## Deterministic Evaluation Summary\n\n")
+	b.WriteString(fmt.Sprintf("- Quality gate before judge: `%t`\n", report.EvaluatorPassed))
+	b.WriteString(fmt.Sprintf("- Fixed verification passed: `%t`\n", report.VerificationPassed))
+	b.WriteString(fmt.Sprintf("- Browser/workflow checks passed: `%t`\n", report.BrowserPassed))
+	b.WriteString(fmt.Sprintf("- Quality score: `%0.1f/100`\n", floatFromMap(report.QualityScore, "total")))
+	b.WriteString(fmt.Sprintf("- Static DDD score: `%0.0f/100`\n", floatFromMap(report.DDDScore, "score")))
+	b.WriteString(fmt.Sprintf("- Tool iterations: `%d`\n", report.IterationCount))
+	b.WriteString(fmt.Sprintf("- Tool runtime: `%s`\n", formatDuration(report.ToolDurationMS)))
+	b.WriteString(fmt.Sprintf("- Observed tool tokens: `%s`\n", formatInt(report.TokenUsage.Total)))
+	b.WriteString(fmt.Sprintf("- Completed build-plan items: `%d`\n", len(report.CompletedItems)))
+	b.WriteString("\nCritical findings from deterministic evaluator:\n")
+	if !report.VerificationPassed {
+		b.WriteString("- Fixed verification failed.\n")
+	}
+	if !report.BrowserPassed {
+		failures := failedBrowserRoutes(report.BrowserEvaluation)
+		if len(failures) > 0 {
+			b.WriteString("- Browser evaluation found broken or incomplete user-facing routes: ")
+			b.WriteString(strings.Join(failures, ", "))
+			b.WriteString(".\n")
+		} else {
+			b.WriteString("- One or more browser workflow checks failed.\n")
+		}
+	}
+	missingTerms := stringSliceFromMap(report.DDDScore, "missing_terms")
+	if len(missingTerms) > 0 {
+		b.WriteString("- Missing required commercial flooring domain language: ")
+		b.WriteString(strings.Join(missingTerms, ", "))
+		b.WriteString(".\n")
+	}
+	if browserJSON, err := os.ReadFile(filepath.Join(report.ArtifactDir, "browser-evaluation.json")); err == nil {
+		b.WriteString("\n\n## Browser Evaluation JSON\n\n```json\n")
+		b.Write(browserJSON)
+		b.WriteString("\n```\n")
+	}
+	if rubric, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(report.ArtifactDir)), "evaluation", "research-rubric.md")); err == nil {
+		b.WriteString("\n\n## Research Rubric\n\n")
+		b.Write(rubric)
+	}
+	return b.String()
+}
+
+func parseJudgeVerdict(output string) string {
+	verdictPattern := regexp.MustCompile(`(?im)^\s*Verdict:\s*(pass|marginal|fail)\s*$`)
+	match := verdictPattern.FindStringSubmatch(output)
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.ToLower(match[1])
 }
 
 func buildEvaluationResult(cfg TrialConfig, evalResults []CommandResult, browserEval map[string]interface{}) (EvaluationResult, error) {
@@ -618,25 +814,19 @@ func parseTokenUsage(artifactDir string) TokenUsage {
 		return usage
 	}
 	sort.Strings(paths)
-	tokenPattern := regexp.MustCompile(`(?m)tokens used\s*\r?\n\s*([0-9][0-9,]*)`)
 	for _, path := range paths {
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
 			usage.Notes = append(usage.Notes, "could not read "+filepath.Base(path)+": "+readErr.Error())
 			continue
 		}
-		matches := tokenPattern.FindAllStringSubmatch(string(content), -1)
-		if len(matches) == 0 {
-			continue
-		}
-		last := matches[len(matches)-1][1]
-		value, parseErr := strconv.ParseInt(strings.ReplaceAll(last, ",", ""), 10, 64)
-		if parseErr != nil {
-			usage.Notes = append(usage.Notes, "could not parse token count in "+filepath.Base(path)+": "+parseErr.Error())
+		fileUsage := tokenUsageFromText(string(content), usage.Source)
+		if !fileUsage.Available {
 			continue
 		}
 		iteration := strings.TrimSuffix(filepath.Base(path), "-stderr.log")
 		iteration = strings.TrimPrefix(iteration, "tool-iteration-")
+		value := fileUsage.Total
 		usage.ByIteration[iteration] = value
 		usage.Total += value
 		usage.Available = true
@@ -644,6 +834,28 @@ func parseTokenUsage(artifactDir string) TokenUsage {
 	if !usage.Available {
 		usage.Notes = append(usage.Notes, "no Codex token summary lines were found in tool stderr logs")
 	}
+	return usage
+}
+
+func tokenUsageFromText(text, source string) TokenUsage {
+	usage := TokenUsage{
+		Available: false,
+		Source:    source,
+	}
+	tokenPattern := regexp.MustCompile(`(?m)tokens used\s*\r?\n\s*([0-9][0-9,]*)`)
+	matches := tokenPattern.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		usage.Notes = append(usage.Notes, "no token summary line found")
+		return usage
+	}
+	last := matches[len(matches)-1][1]
+	value, err := strconv.ParseInt(strings.ReplaceAll(last, ",", ""), 10, 64)
+	if err != nil {
+		usage.Notes = append(usage.Notes, "could not parse token count: "+err.Error())
+		return usage
+	}
+	usage.Available = true
+	usage.Total = value
 	return usage
 }
 
@@ -696,8 +908,12 @@ func researchAnswers(report EvaluationResult, cfg TrialConfig) map[string]string
 	if !report.BrowserPassed {
 		browserSummary = "browser workflow failed"
 	}
+	judgeSummary := "LLM judge unavailable"
+	if report.JudgeReview.Ran {
+		judgeSummary = "LLM judge verdict=" + firstNonEmpty(report.JudgeReview.Verdict, "unparseable")
+	}
 	return map[string]string{
-		"RQ0":  fmt.Sprintf("This trial provides one point on the model/toolchain frontier: quality score %s with tool %s, %s observed tokens, and models %s.", quality, cfg.Tool.Name, formatInt(report.TokenUsage.Total), mapSummary(cfg.Models)),
+		"RQ0":  fmt.Sprintf("This trial provides one point on the model/toolchain frontier: quality score %s with tool %s, %s observed tokens, %s, and models %s.", quality, cfg.Tool.Name, formatInt(report.TokenUsage.Total), judgeSummary, mapSummary(cfg.Models)),
 		"RQ2":  fmt.Sprintf("Code generation reached %d completed build-plan items in %d iterations with %d runner verification failures; fixed verification passed=%t and %s.", len(report.CompletedItems), report.IterationCount, report.RunnerVerifyFailures, report.VerificationPassed, browserSummary),
 		"RQ4":  fmt.Sprintf("The orchestrator/toolchain under test was %s; it converged in %d iterations and the independent evaluator quality gate passed=%t.", cfg.Tool.Name, report.IterationCount, report.EvaluatorPassed),
 		"RQ8":  fmt.Sprintf("Cost-quality scoring has observed token usage (%s tokens), but USD cost remains incomplete until provider pricing/rate capture is added.", formatInt(report.TokenUsage.Total)),
@@ -999,6 +1215,7 @@ func finalReportMarkdown(report EvaluationResult) string {
 	b.WriteString(fmt.Sprintf("- Quality gate passed: `%t`\n", report.EvaluatorPassed))
 	b.WriteString(fmt.Sprintf("- Fixed verification passed: `%t`\n", report.VerificationPassed))
 	b.WriteString(fmt.Sprintf("- Browser/workflow checks passed: `%t`\n", report.BrowserPassed))
+	b.WriteString(fmt.Sprintf("- LLM judge passed: `%t`\n", report.JudgeReview.Passed))
 	b.WriteString(fmt.Sprintf("- Quality score: `%0.1f/100`\n", floatFromMap(report.QualityScore, "total")))
 	b.WriteString(fmt.Sprintf("- DDD score: `%0.0f/100`\n\n", floatFromMap(report.DDDScore, "score")))
 
@@ -1014,6 +1231,31 @@ func finalReportMarkdown(report EvaluationResult) string {
 	b.WriteString("## Research Question Summary\n\n")
 	for _, key := range sortedMapKeysString(report.ResearchAnswers) {
 		b.WriteString(fmt.Sprintf("- **%s:** %s\n", key, report.ResearchAnswers[key]))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("## LLM Judge Review\n\n")
+	b.WriteString(fmt.Sprintf("- Judge available: `%t`\n", report.JudgeReview.Available))
+	b.WriteString(fmt.Sprintf("- Judge ran: `%t`\n", report.JudgeReview.Ran))
+	b.WriteString(fmt.Sprintf("- Judge model: `%s`\n", report.JudgeReview.Model))
+	b.WriteString(fmt.Sprintf("- Judge verdict: `%s`\n", firstNonEmpty(report.JudgeReview.Verdict, "unavailable")))
+	b.WriteString(fmt.Sprintf("- Judge passed: `%t`\n", report.JudgeReview.Passed))
+	if report.JudgeReview.ReportPath != "" {
+		b.WriteString(fmt.Sprintf("- Judge report: `%s`\n", report.JudgeReview.ReportPath))
+	}
+	if report.JudgeReview.DurationMS > 0 {
+		b.WriteString(fmt.Sprintf("- Judge duration: `%s`\n", formatDuration(report.JudgeReview.DurationMS)))
+	}
+	if report.JudgeReview.TokenUsage.Available {
+		b.WriteString(fmt.Sprintf("- Judge observed tokens: `%s`\n", formatInt(report.JudgeReview.TokenUsage.Total)))
+	}
+	if report.JudgeReview.Error != "" {
+		b.WriteString(fmt.Sprintf("- Judge error: `%s`\n", report.JudgeReview.Error))
+	}
+	if len(report.JudgeReview.Notes) > 0 {
+		for _, note := range report.JudgeReview.Notes {
+			b.WriteString(fmt.Sprintf("- Judge note: %s\n", note))
+		}
 	}
 	b.WriteString("\n")
 
@@ -1090,8 +1332,8 @@ func finalReportMarkdown(report EvaluationResult) string {
 	b.WriteString("- Browser tests run headless through Playwright, so no visible browser window is opened during evaluation.\n")
 	b.WriteString("- Browser coverage currently checks route availability, expected page text, basic interactive controls, shell navigation, login form basics, estimate builder surface, relationship intelligence surface, and bid response surface.\n")
 	b.WriteString("- Quality scoring is a deterministic composite of fixed verification, browser checks, static DDD/domain-language scanning, completion count, and provisional security/documentation/performance heuristics.\n")
-	b.WriteString("- The current evaluator is not yet a full manual QA substitute, deep code review, security audit, accessibility audit, or LLM judge review.\n")
-	b.WriteString("- `judge-brief.md` is generated for a separate read-only LLM critique step, but the runner does not yet invoke that judge automatically.\n\n")
+	b.WriteString("- The LLM judge is a read-only critique layer over the generated evidence packet; it is not allowed to modify the trial workspace.\n")
+	b.WriteString("- The current evaluator is not yet a full manual QA substitute, deep code review, security audit, or accessibility audit.\n\n")
 
 	b.WriteString("## Domain-Driven Design\n\n")
 	b.WriteString(fmt.Sprintf("- Static DDD score: `%0.0f/100`\n", floatFromMap(report.DDDScore, "score")))
@@ -1233,6 +1475,12 @@ func criticalFindings(report EvaluationResult) []string {
 	if report.BuildComplete && report.VerificationPassed && !report.BrowserPassed {
 		findings = append(findings, "The build self-reported as complete and passed static verification, but independent browser testing found acceptance-surface defects. This is important evidence for RQ2, RQ4, and RQ10.")
 	}
+	if report.JudgeReview.Ran && report.JudgeReview.Verdict != "" && report.JudgeReview.Verdict != "pass" {
+		findings = append(findings, fmt.Sprintf("The LLM judge verdict was %s; see judge-report.md for the independent critique.", report.JudgeReview.Verdict))
+	}
+	if !report.JudgeReview.Ran {
+		findings = append(findings, "The LLM judge did not run; judge-review evidence is incomplete.")
+	}
 	if len(findings) == 0 {
 		findings = append(findings, "No critical evaluator findings were detected by the current automated checks.")
 	}
@@ -1242,7 +1490,7 @@ func criticalFindings(report EvaluationResult) []string {
 func residualRisks(report EvaluationResult) []string {
 	risks := []string{
 		"Security scoring is provisional until static security analysis and dependency vulnerability checks are added.",
-		"Cost-quality comparison is incomplete until token and provider cost capture are added.",
+		"Cost-quality comparison has token usage but remains incomplete until provider pricing/rate capture is added.",
 		"Static DDD scoring detects terminology and context signals, but it does not prove aggregate boundaries or domain event correctness.",
 	}
 	if report.BrowserPassed {
