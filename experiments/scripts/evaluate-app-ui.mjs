@@ -2,10 +2,14 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { once } from "node:events";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const workspace = process.argv[2];
-const port = Number(process.argv[3] || "4300");
+const thirdArg = process.argv[3];
+const artifactDir = thirdArg && !/^\d+$/.test(thirdArg) ? thirdArg : null;
+const port = Number((artifactDir ? process.argv[4] : thirdArg) || "4300");
 
 if (!workspace) {
   console.error("usage: evaluate-app-ui.mjs /path/to/workspace [port]");
@@ -14,6 +18,7 @@ if (!workspace) {
 
 const result = {
   workspace,
+  artifact_dir: artifactDir,
   port,
   started_at: new Date().toISOString(),
   server_started: false,
@@ -21,6 +26,7 @@ const result = {
   passed: false,
   pages: [],
   workflows: [],
+  screenshot_dir: artifactDir ? path.join(artifactDir, "browser-screenshots") : "",
   failures: [],
   notes: [],
 };
@@ -53,6 +59,10 @@ async function waitForHttp(url, timeoutMs) {
 }
 
 try {
+  if (result.screenshot_dir) {
+    await mkdir(result.screenshot_dir, { recursive: true });
+  }
+
   server = spawn(
     "pnpm",
     [
@@ -168,6 +178,12 @@ try {
       if (pageResult.status >= 400) {
         pageResult.errors.push(`HTTP status ${pageResult.status}`);
       }
+      if (result.screenshot_dir) {
+        const name = route.path === "/" ? "home" : route.path.replace(/^\//, "").replaceAll("/", "-");
+        const screenshotPath = path.join(result.screenshot_dir, `route-${name}.png`);
+        await page.screenshot({ path: screenshotPath, fullPage: true });
+        pageResult.screenshot = screenshotPath;
+      }
     } catch (error) {
       pageResult.expected_text_present = false;
       pageResult.errors.push(error.message);
@@ -192,6 +208,12 @@ try {
         timeout: 15000,
       });
       await check(workflow);
+      if (result.screenshot_dir) {
+        const screenshotName = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        const screenshotPath = path.join(result.screenshot_dir, `workflow-${screenshotName}.png`);
+        await page.screenshot({ path: screenshotPath, fullPage: true });
+        workflow.screenshot = screenshotPath;
+      }
       workflow.passed = workflow.errors.length === 0;
     } catch (error) {
       workflow.errors.push(error.message);

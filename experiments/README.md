@@ -242,7 +242,9 @@ functional/browser evidence, DDD adherence, completion, timing, and residual
 risk notes. It includes an evaluator verdict and critical findings so a
 browser or workflow failure is recorded as an app quality finding, not confused
 with a harness failure. Browser checks use the generated app's local Next.js
-runtime and Playwright from the trial workspace when available.
+runtime and Playwright from the trial workspace when available. They run
+headless and write screenshots under
+`experiments/artifacts/{trial_id}/browser-screenshots/`.
 
 For Codex trials, `evaluate` also parses the per-iteration `tokens used`
 summary from tool stderr logs and reports total observed tokens plus an
@@ -257,6 +259,13 @@ The browser evaluator currently checks:
 - estimate builder acceptance surface
 - relationship intelligence acceptance surface
 - bid response acceptance surface
+
+These browser checks are acceptance-surface checks, not exhaustive manual QA.
+The current quality score is deterministic and provisional: fixed verification,
+browser checks, static DDD/domain-language scanning, completion count, and
+basic heuristic scores for security, documentation, and performance. A separate
+LLM judge critique should be added before treating the quality score as a full
+human-level review.
 
 `judge-brief.md` is suitable input for Codex or another LLM acting only as an
 outer evaluator. The judge must not modify the trial workspace; it should use

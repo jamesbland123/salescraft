@@ -428,13 +428,13 @@ func runBrowserEvaluation(cfg TrialConfig, workspace, artifactDir string, logFil
 		return result
 	}
 	statusf("evaluate: running browser workflow evaluator")
-	_, _ = fmt.Fprintf(logFile, "\n$ node %s %s\n", scriptPath, workspace)
+	_, _ = fmt.Fprintf(logFile, "\n$ node %s %s %s\n", scriptPath, workspace, artifactDir)
 	env, err := trialEnv(cfg, workspace, artifactDir)
 	if err != nil {
 		result["failures"] = []string{err.Error()}
 		return result
 	}
-	cmd := exec.Command("node", scriptPath, workspace)
+	cmd := exec.Command("node", scriptPath, workspace, artifactDir)
 	cmd.Dir = workspace
 	cmd.Env = mergedEnv(env)
 	out, err := cmd.CombinedOutput()
@@ -1044,6 +1044,9 @@ func finalReportMarkdown(report EvaluationResult) string {
 
 	b.WriteString("## Browser Functionality\n\n")
 	b.WriteString(fmt.Sprintf("- Browser workflow passed: `%t`\n", report.BrowserPassed))
+	if screenshotDir := strings.TrimSpace(fmt.Sprint(report.BrowserEvaluation["screenshot_dir"])); screenshotDir != "" {
+		b.WriteString(fmt.Sprintf("- Browser screenshots: `%s`\n", screenshotDir))
+	}
 	if pages, ok := report.BrowserEvaluation["pages"].([]interface{}); ok {
 		b.WriteString("\n| Route | Status | Duration | Result |\n")
 		b.WriteString("| --- | ---: | ---: | --- |\n")
@@ -1082,6 +1085,13 @@ func finalReportMarkdown(report EvaluationResult) string {
 		}
 	}
 	b.WriteString("\n")
+
+	b.WriteString("## Evaluator Coverage\n\n")
+	b.WriteString("- Browser tests run headless through Playwright, so no visible browser window is opened during evaluation.\n")
+	b.WriteString("- Browser coverage currently checks route availability, expected page text, basic interactive controls, shell navigation, login form basics, estimate builder surface, relationship intelligence surface, and bid response surface.\n")
+	b.WriteString("- Quality scoring is a deterministic composite of fixed verification, browser checks, static DDD/domain-language scanning, completion count, and provisional security/documentation/performance heuristics.\n")
+	b.WriteString("- The current evaluator is not yet a full manual QA substitute, deep code review, security audit, accessibility audit, or LLM judge review.\n")
+	b.WriteString("- `judge-brief.md` is generated for a separate read-only LLM critique step, but the runner does not yet invoke that judge automatically.\n\n")
 
 	b.WriteString("## Domain-Driven Design\n\n")
 	b.WriteString(fmt.Sprintf("- Static DDD score: `%0.0f/100`\n", floatFromMap(report.DDDScore, "score")))
