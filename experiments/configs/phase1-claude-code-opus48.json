@@ -1,5 +1,5 @@
 {
-  "trial_id": "phase1-claude-code-opus48-run01",
+  "trial_id": "phase1-claude-code-opus48-run02",
   "phase": "phase1-toolchain-native-baseline",
   "allowed_variable": "toolchain",
   "baseline_ref": "HEAD",

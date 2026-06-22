@@ -1838,7 +1838,7 @@ func sectionItems(content, header string) []string {
 
 func isEmptySectionItem(item string) bool {
 	switch strings.ToLower(strings.TrimSpace(item)) {
-	case "", "none", "none yet.":
+	case "", "none", "(none)", "none yet.", "(none yet)":
 		return true
 	default:
 		return false
