@@ -1813,7 +1813,7 @@ func sectionItems(content, header string) []string {
 	for _, raw := range lines {
 		line := strings.TrimSpace(raw)
 		if strings.HasPrefix(line, "## ") {
-			inSection = line == header
+			inSection = isSectionHeader(line, header)
 			continue
 		}
 		if !inSection || line == "" {
@@ -1834,6 +1834,13 @@ func sectionItems(content, header string) []string {
 		}
 	}
 	return items
+}
+
+func isSectionHeader(line, header string) bool {
+	if line == header {
+		return true
+	}
+	return strings.HasPrefix(line, header+" ")
 }
 
 func isEmptySectionItem(item string) bool {

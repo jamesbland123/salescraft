@@ -125,6 +125,10 @@ evaluate or re-archive a previous retained workspace without editing the config:
 The runner streams tool and verification output to the console while also
 writing the same output to artifact logs. Long-running commands emit a
 `[salescraft-exp] command: still running...` heartbeat every 30 seconds.
+Claude Code print-mode defaults to buffered text output, which can make tmux
+look idle even while the model is working. Claude Code trial configs use
+`--output-format=stream-json --include-partial-messages` so tmux shows realtime
+model/tool activity comparable to Codex's verbose stderr stream.
 
 ## Reset Model
 
@@ -140,6 +144,11 @@ golden repo commit
   -> clone is retained for manual testing
   -> clone is removed later with explicit clean
 ```
+
+The runner accepts annotated second-level build-state headings such as
+`## Next Eligible (Phase 4 - Domain Features)`. These annotations are for human
+readability and must not cause the runner to treat a partially complete build
+as finished.
 
 Do not run Codex, Claude Code, OpenCode, or other tools directly in the golden
 repo when collecting comparable experiment data.

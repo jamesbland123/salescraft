@@ -13,7 +13,7 @@
     "command": "zsh",
     "args": [
       "-lc",
-      "claude --print --dangerously-skip-permissions --model global.anthropic.claude-opus-4-8 < PROMPT.md"
+      "claude --print --output-format=stream-json --include-partial-messages --dangerously-skip-permissions --model global.anthropic.claude-opus-4-8 < PROMPT.md"
     ],
     "env": {
       "CLAUDE_CODE_USE_BEDROCK": "1",
